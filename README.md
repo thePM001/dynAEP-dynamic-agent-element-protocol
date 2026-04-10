@@ -18,7 +18,7 @@ dynAEP is the fusion of **AEP** (Agent Element Protocol) and **AG-UI** (Agent-Us
 
 **AEP** solves the build-time problem: AI agents scaffold, modify and validate UI structure against a mathematically verified topological matrix.
 
-**AG-UI** solves the runtime problem: AI agents stream live updates, synchronise state, call tools and respond to user input in real time.
+**AG-UI** solves the runtime problem: AI agents stream live updates, synchronize state, call tools and respond to user input in real time.
 
 **dynAEP** fuses both into a single architecture where every live runtime event is constrained by AEP's deterministic graph. The agent cannot hallucinate a UI element at build time (AEP prevents it) and cannot hallucinate a state mutation at runtime (dynAEP validates every AG-UI delta against the AEP registry before applying it).
 
@@ -726,7 +726,7 @@ AEP is always the foundation. dynAEP is the live runtime layer on top.
 | Letting AG-UI events modify the DOM directly | No validation, hallucination surface wide open | Every event passes through the dynAEP bridge |
 | Agent generating raw HTML via generative UI | Unverifiable, no AEP IDs, no z-band enforcement | Agent proposes generative topology using pre-verified AEP primitives only |
 | Agent minting its own AEP IDs | ID collisions in multi-agent scenarios, rejection loops | Bridge mints all IDs via sequential counters per prefix |
-| Storing UI state only in AG-UI shared state | AEP scene graph drifts from runtime state | Scene graph IS the shared state, synchronised via STATE_SNAPSHOT |
+| Storing UI state only in AG-UI shared state | AEP scene graph drifts from runtime state | Scene graph IS the shared state, synchronized via STATE_SNAPSHOT |
 | Skipping JIT validation for performance | One bad mutation corrupts the entire graph | Use Template Nodes for dynamic elements, JIT cost is minimal |
 | Hardcoding AG-UI event handlers per component | Unmaintainable, duplicated logic | Centralise in the dynAEP bridge, components just render |
 | Agent freestyle-creating elements without registry types | Orphan elements, untraceable mutations | Bridge rejects any element whose type is not registered in AEP-FCR |
