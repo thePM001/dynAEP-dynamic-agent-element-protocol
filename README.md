@@ -518,7 +518,7 @@ When `schema_revision` is bumped while the application is running (e.g., an agen
 
 ## 12. Implementation Plan
 
-### Phase 1: Core Bridge (Weeks 1-3)
+### Phase 1: Core Bridge
 
 - [ ] dynAEP Validation Bridge in TypeScript (`@dynaep/core`)
 - [ ] Wire AG-UI SSE client to bridge input
@@ -529,7 +529,7 @@ When `schema_revision` is bumped while the application is running (e.g., an agen
 - [ ] JSON Pointer parser (RFC 6901) for three-layer delta routing
 - [ ] Unit tests for all validation paths
 
-### Phase 2: Tool Registration (Weeks 3-4)
+### Phase 2: Tool Registration
 
 - [ ] Register `aep_add_element` (bridge mints ID), `aep_move_element`, `aep_query_graph`, `aep_swap_theme` as AG-UI frontend tools
 - [ ] Implement `next_available_id` query type
@@ -537,14 +537,14 @@ When `schema_revision` is bumped while the application is running (e.g., an agen
 - [ ] Wire tool results back through AG-UI `TOOL_CALL_RESULT` events
 - [ ] Integration tests with mock agent
 
-### Phase 3: State Sync (Weeks 4-5)
+### Phase 3: State Sync
 
 - [ ] Implement `STATE_SNAPSHOT` serialisation of live AEP scene graph
 - [ ] Implement `STATE_DELTA` ingestion with three-layer path routing
 - [ ] Implement `AEP_RUNTIME_COORDINATES` emission via ResizeObserver + debounce
 - [ ] Implement conflict resolution (last-write-wins + optimistic locking modes)
 
-### Phase 4: Generative Topology (Weeks 5-6)
+### Phase 4: Generative Topology
 
 - [ ] Intercept AG-UI A2UI proposals
 - [ ] Validate against AEP prefix, z-band, parent, skin_binding and Rego rules
@@ -552,27 +552,27 @@ When `schema_revision` is bumped while the application is running (e.g., an agen
 - [ ] Implement live scene graph and registry updates for accepted proposals
 - [ ] Implement rejection flow with specific error feedback
 
-### Phase 5: Rego Integration (Week 6)
+### Phase 5: Rego Integration 
 
 - [ ] OPA WASM loader for browser environments
 - [ ] OPA CLI subprocess for server environments
 - [ ] Pre-compiled decision table fallback
 - [ ] Policy hot-reload on file change
 
-### Phase 6: Interrupts and Approval (Week 7)
+### Phase 6: Interrupts and Approval
 
 - [ ] Implement approval policy from `dynaep-config.yaml`
 - [ ] Wire AG-UI interrupt events to approval gates
 - [ ] Build approval UI component (itself registered in AEP)
 - [ ] Human preview for theme swaps
 
-### Phase 7: Python Bridge (Week 8)
+### Phase 7: Python Bridge
 
 - [ ] Port validation bridge to Python for backend-side validation
 - [ ] Integrate with AG-UI Python SDK
 - [ ] Mirror all TypeScript bridge functionality
 
-### Phase 8: Documentation and Examples (Week 9)
+### Phase 8: Documentation and Examples 
 
 - [ ] Full API reference for dynAEP bridge
 - [ ] Tutorial: "Build a live agentic dashboard with dynAEP"
@@ -733,30 +733,6 @@ AEP is always the foundation. dynAEP is the live runtime layer on top.
 | Using polling for runtime reflection | Battery-heavy, 1-second lag, wasteful | ResizeObserver + MutationObserver with debounce |
 | Parsing JSON Patch paths with custom regex | Fragile, breaks on edge cases | Standards-compliant JSON Pointer parser (RFC 6901) |
 | Ignoring schema_revision bumps at runtime | Stale configs cause validation errors | Bridge emits DYNAEP_SCHEMA_RELOAD, agents re-query graph |
-
----
-
-## 17. What's In This Repo
-
-```
-README.md                    This document (full protocol reference + implementation plan)
-dynaep-config.yaml           Configuration for the validation bridge
-dynaep-bridge.ts             Reference implementation of the validation bridge (TypeScript)
-aep-scene.json               Example AEP Layer 1 (Structure)
-aep-registry.yaml            Example AEP Layer 2 (Behaviour)
-aep-theme.yaml               Example AEP Layer 3 (Skin)
-aep-policy.rego              Example OPA/Rego forbidden patterns policy
-sdk/                         SDK reference implementations
-  sdk-aep-core.ts            @aep/core (TypeScript)
-  sdk-aep-react.tsx          @aep/react (React)
-  sdk-aep-vue.ts             @aep/vue (Vue 3)
-  sdk-aep-python.py          aep (Python)
-  sdk-dynaep-core.ts         @dynaep/core (TypeScript)
-  sdk-dynaep-react.tsx       @dynaep/react (React)
-  sdk-dynaep-python.py       dynaep (Python)
-  sdk-dynaep-copilotkit.tsx  @dynaep/copilotkit (CopilotKit)
-  sdk-dynaep-cli.ts          dynaep-cli (CLI)
-```
 
 ---
 
