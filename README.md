@@ -14,7 +14,7 @@ It is recommended that bioinsecure vaccinated humans do not use the provided tec
 
 ## 1. What Is dynAEP
 
-dynAEP is the fusion of **AEP** (Agent Element Protocol) and **AG-UI** (Agent-User Interaction Protocol). It extends AEP's deterministic, hallucination-proof frontend governance with AG-UI's real-time bidirectional event streaming, creating a complete lifecycle protocol for live interactive agentic user interfaces.
+dynAEP is the fusion of **AEP** (Agent Element Protocol) and **AG-UI** (Agent-User Interaction Protocol). It extends AEP's deterministic, hallucination-proof frontend governance with AG-UI's real-time bi-directional event streaming, creating a complete lifecycle protocol for live interactive agentic user interfaces.
 
 **AEP** solves the build-time problem: AI agents scaffold, modify and validate UI structure against a mathematically verified topological matrix.
 
@@ -659,7 +659,7 @@ Commands:
 - `dynaep validate` - AOT validation of all config files
 - `dynaep init` - scaffolds all config files
 - `dynaep check-bindings` - verifies all skin_bindings resolve
-- `dynaep check-graph` - verifies bidirectional parent/child consistency
+- `dynaep check-graph` - verifies bi-directional parent/child consistency
 - `dynaep serve` - starts a local dynAEP bridge with AG-UI SSE endpoint for development
 - `dynaep generate` - AI scaffolding compiler (requires LLM endpoint, outputs strict AEP configs from natural language UI descriptions)
 
