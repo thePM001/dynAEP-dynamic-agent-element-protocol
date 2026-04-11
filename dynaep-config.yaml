@@ -1,0 +1,126 @@
+aep_version: "1.1"
+dynaep_version: "0.2"
+schema_revision: 1
+
+# ===========================================================================
+# dynAEP Configuration v0.2
+# Governs the validation bridge between AG-UI event streams and the AEP
+# frontend renderer. Every AG-UI event targeting an AEP element passes
+# through this bridge before reaching the UI.
+# Agents NEVER mint IDs. The bridge mints all IDs.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# TRANSPORT
+# ---------------------------------------------------------------------------
+
+transport:
+  protocol: "sse"                   # sse | websocket
+  endpoint: "/api/agent"
+  reconnect_interval_ms: 3000
+  heartbeat_interval_ms: 15000
+
+# ---------------------------------------------------------------------------
+# AEP SOURCE FILES
+# ---------------------------------------------------------------------------
+
+aep_sources:
+  scene: "./aep-scene.json"
+  registry: "./aep-registry.yaml"
+  theme: "./aep-theme.yaml"
+
+# ---------------------------------------------------------------------------
+# VALIDATION
+# ---------------------------------------------------------------------------
+
+validation:
+  mode: "strict"                    # strict | permissive | log_only
+                                    #   strict: reject invalid mutations
+                                    #   permissive: apply but log warnings
+                                    #   log_only: apply all, log everything
+  aot_on_startup: true              # full AOT validation when bridge initialises
+  jit_on_every_delta: true          # validate every STATE_DELTA and TOOL_CALL
+
+# ---------------------------------------------------------------------------
+# REGO POLICY (OPA / Open Policy Agent)
+# ---------------------------------------------------------------------------
+
+rego:
+  policy_path: "./aep-policy.rego"
+  evaluation: "wasm"                # wasm | cli | precompiled
+                                    #   wasm: @open-policy-agent/opa-wasm (~200KB)
+                                    #   cli: opa binary via subprocess (server only)
+                                    #   precompiled: pre-compiled decision table (zero deps)
+
+# ---------------------------------------------------------------------------
+# RUNTIME REFLECTION
+# ---------------------------------------------------------------------------
+
+runtime_reflection:
+  enabled: true
+  method: "observer"                # observer (ResizeObserver + MutationObserver) | polling
+  debounce_ms: 250                  # debounce per element to avoid flooding
+  broadcast_to_agent: true          # send AEP_RUNTIME_COORDINATES events to agent
+  include_invisible: false          # include elements with visible: false
+
+# ---------------------------------------------------------------------------
+# APPROVAL POLICY (Human-in-the-Loop)
+# ---------------------------------------------------------------------------
+
+approval_policy:
+  structure_mutations: "auto"       # auto | require_approval
+  behaviour_mutations: "auto"
+  skin_mutations: "auto"
+  new_element_creation: "require_approval"
+  forbidden_pattern_changes: "require_approval"
+
+# ---------------------------------------------------------------------------
+# CONFLICT RESOLUTION
+# ---------------------------------------------------------------------------
+
+conflict_resolution:
+  mode: "last_write_wins"           # last_write_wins | optimistic_locking
+                                    #   last_write_wins: apply if valid, reject if not
+                                    #   optimistic_locking: require expected_version field
+
+# ---------------------------------------------------------------------------
+# ID MINTING
+# ---------------------------------------------------------------------------
+
+id_minting:
+  enabled: true                     # bridge mints all IDs, agents never generate them
+  counters_persist: true            # persist ID counters across restarts
+
+# ---------------------------------------------------------------------------
+# THEMES
+# ---------------------------------------------------------------------------
+
+themes:
+  available:
+    - name: "dark"
+      path: "./aep-theme.yaml"
+    - name: "light"
+      path: "./aep-theme-light.yaml"
+  active: "dark"
+
+# ---------------------------------------------------------------------------
+# AG-UI FRONTEND TOOLS
+# Automatically registered with the AG-UI client on bridge startup.
+# aep_add_element: agent proposes topology, bridge mints ID and returns it.
+# ---------------------------------------------------------------------------
+
+tools:
+  aep_add_element: true
+  aep_move_element: true
+  aep_query_graph: true
+  aep_swap_theme: true
+
+# ---------------------------------------------------------------------------
+# LOGGING
+# ---------------------------------------------------------------------------
+
+logging:
+  level: "info"                     # debug | info | warn | error
+  log_rejections: true
+  log_accepted_mutations: false
+  log_tool_calls: true
