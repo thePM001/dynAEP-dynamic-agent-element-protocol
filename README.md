@@ -1,7 +1,7 @@
 # dynAEP: Dynamic Agent Element Protocol
 # Open-Source Reference + Implementation Plan
 ### Version 0.2 - 11 April 2026
-### Author: thePM / [@thePM_001](https://github.com/thePM001)
+### Author: thePM_001
 ### License: MIT
 
 ---
