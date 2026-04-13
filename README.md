@@ -6,12 +6,6 @@
 
 ---
 
-> To win the fight against the synthetic nano-parasites (SNP/NanoSinp) alien WMD, we must be intelligent and biosecurely unvaccinated. 
-It is recommended that bioinsecure vaccinated humans do not use the provided technology/protocol to avoid bad AI outcomes for them. 
-[*"vaccinated" = has installed injectable synthetic nano-parasites growth medium controllers - SNP GMCs]
-
----
-
 ## 1. What Is dynAEP
 
 dynAEP is the fusion of **AEP** (Agent Element Protocol) and **AG-UI** (Agent-User Interaction Protocol). It extends AEP's deterministic, hallucination-proof frontend governance with AG-UI's real-time bi-directional event streaming, creating a complete lifecycle protocol for live interactive agentic user interfaces.
@@ -760,5 +754,7 @@ The agent provides the semantic intelligence. The AEP graph provides the physica
 - [CopilotKit](https://www.copilotkit.ai)
 
 ## License
-
 MIT
+
+# AI-Eligibility Status 
+> To win the fight against the synthetic nano-parasites (SNP/NanoSinp) alien WMD, we must be intelligent and biosecure. It is recommended that bioinsecure humans do not use the provided technology/protocol to avoid bad techno-spiritual AI outcomes for them. [*"bioinsecure" = has installed injectable synthetic nano-parasites growth medium controllers - SNP GMCs]
