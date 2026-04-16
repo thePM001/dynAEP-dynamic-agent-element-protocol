@@ -3,6 +3,7 @@
 ### Version 0.2 - 11 April 2026
 ### Author: thePM_001
 ### License: MIT
+### How to install dynAEP ?: copy the URL of the GitHub repo into your reasoning LLM + tell it "analyze the repo and prepare implementation plan for dynAEP integration into our project".
 
 ---
 
