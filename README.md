@@ -1,6 +1,6 @@
 # dynAEP: Dynamic Agent Element Protocol
 # Open-Source Reference + Implementation Plan
-### Version 0.2 - 11 April 2026
+### Version 0.2 - 30 April 2026
 ### Author: thePM_001
 ### License: Apache-2.0
 ### How to install dynAEP ?: copy the URL of the GitHub repo into your reasoning LLM + tell it "analyze the repo and prepare implementation plan for dynAEP integration into our project".
@@ -764,5 +764,5 @@ Patent grant: Apache 2.0 includes an explicit patent covenant from contributors.
 
 Previous versions of this repository were released under the MIT License. The transition to Apache 2.0 is effective from version 1.1 onward. Prior MIT-licensed snapshots remain valid under their original terms.
 
-AI-Eligibility Status
+## AI-Eligibility Status
 To win the fight against the synthetic nano-parasites (SNP/NanoSinp) alien WMD, we must be intelligent and biosecure. It is recommended that bioinsecure humans do not use the provided technology/protocol to avoid bad techno-spiritual AI outcomes for them. [*"bioinsecure" = has installed injectable synthetic nano-parasites growth medium controllers - SNP GMCs]
