@@ -124,3 +124,59 @@ logging:
   log_rejections: true
   log_accepted_mutations: false
   log_tool_calls: true
+
+# ---------------------------------------------------------------------------
+# TA-1: TEMPORAL AUTHORITY
+# ---------------------------------------------------------------------------
+
+timekeeping:
+  protocol: "ntp"                   # ntp | ptp | system
+  source: "pool.ntp.org"            # NTP server or PTP grandmaster address
+  sync_interval_ms: 30000           # re-sync every 30 seconds
+  max_drift_ms: 50                  # reject events drifting beyond 50 ms
+  max_future_ms: 500                # reject events timestamped > 500 ms in the future
+  max_staleness_ms: 5000            # reject events older than 5 seconds
+  bridge_is_authority: true         # bridge OVERWRITES agent timestamps
+  log_drift_warnings: true          # log when drift exceeds 50% of threshold
+
+causal_ordering:
+  enabled: true
+  max_reorder_buffer_size: 64       # buffer up to 64 events for reordering
+  max_reorder_wait_ms: 200          # wait up to 200 ms for missing dependencies
+  conflict_resolution: "last_write_wins"  # last_write_wins | optimistic_locking
+  enable_vector_clocks: true        # per-agent Lamport vector clocks
+  enable_element_history: true      # retain causal history per element
+  history_depth: 100                # retain last 100 events per element
+
+forecast:
+  enabled: false                    # disabled by default (requires TimesFM)
+  timesfm_mode: "local"             # local | remote
+  timesfm_endpoint: null            # HTTP endpoint for remote mode
+  context_window: 64                # feed last 64 data points
+  forecast_horizon: 12              # predict 12 steps ahead
+  anomaly_threshold: 3.0            # flag anomalies beyond 3.0 standard deviations
+  debounce_ms: 250                  # baseline debounce (overridden by adaptive)
+  adaptive_debounce: true           # learn per-element debounce intervals
+  max_tracked_elements: 500         # limit memory usage for tracked elements
+  anomaly_action: "warn"            # warn | require_approval | log_only
+
+# ---------------------------------------------------------------------------
+# TA-2: PERCEPTUAL TEMPORAL GOVERNANCE
+# ---------------------------------------------------------------------------
+
+perception:
+  enabled: true
+  enable_adaptive_profiles: true       # learn per-user temporal preferences
+  profile_learning_rate: 0.15          # EMA alpha for profile updates
+  profile_erosion_half_life_ms: 604800000  # 7 days in milliseconds
+  min_interactions_for_profile: 5      # minimum interactions before profile adjusts
+  hard_violation_action: "clamp"       # reject | clamp
+  soft_violation_action: "clamp"       # clamp | warn | log_only
+  governed_envelope_mode: "overwrite"  # overwrite | metadata_only
+  modality_overrides: {}               # per-modality comfortable range overrides
+  rego_policy_path: "./policies/perception-policy.rego"
+
+temporal_authority:
+  audit_trail_depth: 500               # max mutation records per element
+  mutation_tracking_enabled: true      # track all element mutations
+  staleness_broadcast_interval_ms: 10000  # broadcast staleness checks every 10 seconds
