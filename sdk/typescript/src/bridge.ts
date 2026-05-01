@@ -19,7 +19,7 @@ import { zBandForPrefix, prefixFromId, isTemplateInstance, validateJIT } from "@
 import { BridgeClock, type ClockConfig, type BridgeTimestamp } from "./temporal/clock";
 import { TemporalValidator, type TemporalValidatorConfig, type TemporalValidationResult } from "./temporal/validator";
 import { CausalOrderingEngine, type CausalConfig, type CausalEvent } from "./temporal/causal";
-import { ForecastSidecar, type ForecastConfig } from "./temporal/forecast";
+import { ForecastSidecar, type ForecastConfig, type AnomalyResult } from "./temporal/forecast";
 import {
   type TemporalRejectionEvent,
   type TemporalStampEvent,
@@ -112,7 +112,7 @@ export class DynAEPBridge {
   private forecastSidecar: ForecastSidecar;
   private clockSyncTimer: ReturnType<typeof setInterval> | null = null;
   private agentSequenceCounters: Record<string, number> = {};
-  private eventEmitter: ((event: any) => void) | null = null;
+  private eventEmitter: ((event: unknown) => void) | null = null;
 
   constructor(config: AEPConfig, bridgeConfig: DynAEPBridgeConfig) {
     this.config = config;
@@ -259,14 +259,37 @@ export class DynAEPBridge {
       }
     }
 
-    // TA-1 Step 4: Forecast anomaly check (async, non-blocking for normal flow)
+    // TA-1 Step 4: Forecast - ingest coordinates and sync anomaly check (OPT-001)
     if (
       event.type === "CUSTOM" &&
       event.dynaep_type === "AEP_RUNTIME_COORDINATES" &&
       event.target_id &&
       event.coordinates
     ) {
-      this.forecastSidecar.ingest(event as any);
+      this.forecastSidecar.ingest(event as unknown as import("./temporal/forecast").RuntimeCoordinateEvent);
+    }
+
+    // OPT-001: Synchronous O(1) anomaly check from prediction cache
+    if (event.target_id && this.bridgeConfig.forecast?.enabled) {
+      const anomalyResult: AnomalyResult | null = this.forecastSidecar.checkAnomalySync(
+        event.target_id,
+        event.coordinates ?? {}
+      );
+      if (anomalyResult !== null && anomalyResult.isAnomaly) {
+        const anomalyAction = (this.bridgeConfig.forecast as Record<string, unknown>).anomaly_action ?? "warn";
+        if (anomalyAction === "require_approval" && anomalyResult.recommendation === "require_approval") {
+          return this.createRejection(
+            event.target_id,
+            `Temporal anomaly detected (score=${anomalyResult.score.toFixed(2)}): requires approval`,
+            event.timestamp,
+          );
+        }
+        // For "warn" and "log_only", attach anomaly metadata but proceed
+        (event as Record<string, unknown>)._anomaly = {
+          score: anomalyResult.score,
+          recommendation: anomalyResult.recommendation,
+        };
+      }
     }
 
     // Proceed with structural validation (existing pipeline)
@@ -942,8 +965,12 @@ export class DynAEPBridge {
   // TA-1: Clock Sync Broadcasting
   // -------------------------------------------------------------------------
 
-  startClockSync(emitEvent: (event: any) => void): void {
+  startClockSync(emitEvent: (event: unknown) => void): void {
     this.eventEmitter = emitEvent;
+
+    // OPT-001: Start the forecast background worker
+    this.forecastSidecar.startWorker();
+
     const syncIntervalMs = this.bridgeConfig.timekeeping?.syncIntervalMs ?? 30000;
 
     const doSync = async () => {
@@ -976,5 +1003,8 @@ export class DynAEPBridge {
       this.clockSyncTimer = null;
     }
     this.eventEmitter = null;
+
+    // OPT-001: Stop the forecast background worker
+    this.forecastSidecar.stopWorker();
   }
 }

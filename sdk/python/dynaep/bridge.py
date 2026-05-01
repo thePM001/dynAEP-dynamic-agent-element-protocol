@@ -249,6 +249,16 @@ class DynAEPBridge:
         ):
             self.forecast_sidecar.ingest(event)
 
+        # OPT-001: Synchronous O(1) anomaly check from prediction cache
+        target_id = event.get("target_id")
+        if target_id and self.bridge_config.forecast_config and self.bridge_config.forecast_config.enabled:
+            anomaly_result = self.forecast_sidecar.check_anomaly(target_id, event.get("coordinates", {}))
+            if anomaly_result is not None and anomaly_result.is_anomaly:
+                event["_anomaly"] = {
+                    "score": anomaly_result.score,
+                    "recommendation": anomaly_result.recommendation,
+                }
+
         # Proceed with structural validation (existing pipeline)
         event_type = event.get("type")
 

@@ -98,6 +98,21 @@ function median(values: number[]): number {
 }
 
 // ---------------------------------------------------------------------------
+// Async Prediction Cache (OPT-001)
+// ---------------------------------------------------------------------------
+
+/**
+ * Lightweight cached prediction stored in memory for O(1) sync lookups.
+ */
+export interface CachedPredictionEntry {
+  targetId: string;
+  predictions: ForecastPoint[];
+  confidence: number;
+  forecastedAt: number;
+  expiresAt: number;
+}
+
+// ---------------------------------------------------------------------------
 // ForecastSidecar
 // ---------------------------------------------------------------------------
 
@@ -106,10 +121,16 @@ export class ForecastSidecar {
   private histories: Map<string, RuntimeCoordinates[]>;
   private lastForecastTime: Map<string, number>;
   private isAvailable: boolean;
-  private subprocess: any | null;
+  private subprocess: unknown | null;
   private lastAvailabilityCheck: number;
   private cachedForecasts: Map<string, TemporalForecast>;
   private elementUpdateOrder: string[];
+
+  // OPT-001: Async prediction cache for O(1) sync anomaly checking
+  private predictionCache: Map<string, CachedPredictionEntry>;
+  private pendingElements: Set<string>;
+  private debounceCache: Map<string, number>;
+  private workerTimer: ReturnType<typeof setInterval> | null;
 
   constructor(config: ForecastConfig) {
     this.config = { ...config };
@@ -120,6 +141,12 @@ export class ForecastSidecar {
     this.lastAvailabilityCheck = 0;
     this.cachedForecasts = new Map();
     this.elementUpdateOrder = [];
+
+    // OPT-001: Initialize async prediction cache
+    this.predictionCache = new Map();
+    this.pendingElements = new Set();
+    this.debounceCache = new Map();
+    this.workerTimer = null;
   }
 
   // -------------------------------------------------------------------------
@@ -790,11 +817,200 @@ export class ForecastSidecar {
       this.histories.delete(key);
       this.lastForecastTime.delete(key);
       this.cachedForecasts.delete(key);
+      this.predictionCache.delete(key);
+      this.debounceCache.delete(key);
+      this.pendingElements.delete(key);
     }
 
     // Clean up the LRU order to match surviving entries
     this.elementUpdateOrder = this.elementUpdateOrder.filter(
       (id) => activeSet.has(id)
     );
+  }
+
+  // -------------------------------------------------------------------------
+  // OPT-001: Synchronous Anomaly Check (cache-based, O(1), never blocks)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Synchronous anomaly check using the prediction cache. Returns null on
+   * cache miss (no prediction available or prediction expired). Returns an
+   * AnomalyResult on cache hit. This method is O(1) and NEVER performs
+   * inference — it only reads from the in-memory prediction cache.
+   *
+   * Call this from the event processing pipeline instead of the async
+   * checkAnomaly() method to avoid blocking on TimesFM inference.
+   */
+  checkAnomalySync(
+    elementId: string,
+    proposedState: Partial<RuntimeCoordinates>
+  ): AnomalyResult | null {
+    if (!this.config.enabled) {
+      return null;
+    }
+
+    const cached = this.predictionCache.get(elementId);
+
+    // Cache miss: no prediction available
+    if (!cached) {
+      this.pendingElements.add(elementId);
+      return null;
+    }
+
+    // Expired prediction: treat as cache miss
+    if (Date.now() > cached.expiresAt) {
+      this.predictionCache.delete(elementId);
+      this.pendingElements.add(elementId);
+      return null;
+    }
+
+    // Cache hit: compute anomaly from cached prediction
+    if (cached.predictions.length === 0) {
+      return null;
+    }
+
+    const firstPrediction = cached.predictions[0];
+    const predictedState = firstPrediction.predictedState;
+
+    let maxZScore = 0;
+    for (const dim of NUMERIC_DIMS) {
+      const predicted = (predictedState as Record<string, unknown>)[dim];
+      const proposed = (proposedState as Record<string, unknown>)[dim];
+      const qLow = (firstPrediction.quantileLow as Record<string, unknown>)[dim];
+      const qHigh = (firstPrediction.quantileHigh as Record<string, unknown>)[dim];
+
+      if (
+        typeof predicted !== "number" ||
+        typeof proposed !== "number" ||
+        typeof qLow !== "number" ||
+        typeof qHigh !== "number"
+      ) {
+        continue;
+      }
+
+      const spread = Math.abs(qHigh - qLow);
+      const halfSpread = spread / 2;
+      const deviation = Math.abs(proposed - predicted);
+      const zScore = halfSpread > 0 ? deviation / halfSpread : deviation > 0 ? 10 : 0;
+
+      if (zScore > maxZScore) {
+        maxZScore = zScore;
+      }
+    }
+
+    const isAnomaly = maxZScore > this.config.anomalyThreshold;
+    let recommendation: "pass" | "warn" | "require_approval";
+    if (maxZScore > this.config.anomalyThreshold * 2) {
+      recommendation = "require_approval";
+    } else if (maxZScore > this.config.anomalyThreshold) {
+      recommendation = "warn";
+    } else {
+      recommendation = "pass";
+    }
+
+    return {
+      isAnomaly,
+      score: maxZScore,
+      predicted: predictedState,
+      actual: proposedState,
+      recommendation,
+    };
+  }
+
+  /**
+   * Get the cached adaptive debounce interval for an element.
+   * Returns the config default if no cached value exists.
+   */
+  getAdaptiveDebounceSync(elementId: string): number {
+    return this.debounceCache.get(elementId) ?? this.config.debounceMs;
+  }
+
+  /**
+   * Get the cached prediction entry for an element, or null if absent/expired.
+   */
+  getCachedPredictionEntry(elementId: string): CachedPredictionEntry | null {
+    const cached = this.predictionCache.get(elementId);
+    if (!cached || Date.now() > cached.expiresAt) {
+      return null;
+    }
+    return cached;
+  }
+
+  // -------------------------------------------------------------------------
+  // OPT-001: Async Worker Lifecycle
+  // -------------------------------------------------------------------------
+
+  /**
+   * Start the background async inference worker. The worker runs on a timer
+   * at the configured debounceMs interval, batching pending elements and
+   * updating the prediction cache. The event pipeline is never blocked.
+   */
+  startWorker(): void {
+    if (!this.config.enabled || this.workerTimer !== null) {
+      return;
+    }
+
+    this.workerTimer = setInterval(() => {
+      this.runWorkerTick().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : "unknown";
+        console.warn(`[ForecastSidecar] Worker tick error: ${msg}`);
+      });
+    }, this.config.debounceMs);
+  }
+
+  /**
+   * Stop the background async inference worker.
+   */
+  stopWorker(): void {
+    if (this.workerTimer !== null) {
+      clearInterval(this.workerTimer);
+      this.workerTimer = null;
+    }
+  }
+
+  /**
+   * Execute one worker tick: select elements needing fresh predictions,
+   * batch their time series, run inference, and update the cache.
+   */
+  private async runWorkerTick(): Promise<void> {
+    // Collect pending elements (cache misses from sync checks)
+    const pending = Array.from(this.pendingElements);
+    this.pendingElements.clear();
+
+    // Also collect elements with oldest predictions
+    const stale: string[] = [];
+    for (const [id, cached] of this.predictionCache) {
+      if (Date.now() > cached.expiresAt) {
+        stale.push(id);
+      }
+    }
+
+    // Combine and deduplicate, limit to maxTrackedElements
+    const candidates = new Set([...pending, ...stale]);
+    const selected = Array.from(candidates).slice(0, this.config.maxTrackedElements);
+
+    if (selected.length === 0) {
+      return;
+    }
+
+    // For each selected element, run forecast and update cache
+    for (const elementId of selected) {
+      const result = await this.forecast(elementId);
+      if (result) {
+        const now = Date.now();
+        const entry: CachedPredictionEntry = {
+          targetId: elementId,
+          predictions: result.predictions,
+          confidence: result.confidence,
+          forecastedAt: now,
+          expiresAt: now + this.config.forecastHorizon,
+        };
+        this.predictionCache.set(elementId, entry);
+
+        // Update adaptive debounce
+        const debounce = this.adaptiveDebounce(elementId);
+        this.debounceCache.set(elementId, debounce);
+      }
+    }
   }
 }
