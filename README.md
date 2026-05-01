@@ -27,7 +27,7 @@ dynAEP is the fusion of AEP (Agent Element Protocol) and AG-UI (Agent-User Inter
 LAYER           PROTOCOL        FUNCTION
 -----------     -----------     ----------------------------------------
 Agent-Tools     MCP             Agent connects to external data and tools
-Agent-Agent     A2A             Agents coordinate across distributed systems
+Agent-Agent     any             Agents coordinate across distributed systems
 Agent-User      AG-UI           Real-time event streaming between agent and frontend
 Agent-UI-Gov    AEP             Deterministic UI structure, behaviour and skin
 Agent-UI-Live   dynAEP          AEP governance applied to live AG-UI event streams
