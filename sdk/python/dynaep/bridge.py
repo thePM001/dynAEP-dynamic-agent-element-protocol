@@ -29,6 +29,7 @@ from dynaep.temporal.clock import BridgeClock, ClockConfig
 from dynaep.temporal.validator import TemporalValidator, TemporalValidatorConfig
 from dynaep.temporal.causal import CausalOrderingEngine, CausalConfig, CausalEvent
 from dynaep.temporal.forecast import ForecastSidecar, ForecastConfig
+from dynaep.template.resolver import TemplateInstanceResolver
 
 logger = logging.getLogger("dynaep.bridge")
 
@@ -172,6 +173,9 @@ class DynAEPBridge:
         )
         self.forecast_sidecar = ForecastSidecar(forecast_cfg)
 
+        # OPT-009: Template instance resolver for fast-exit
+        self.template_resolver = TemplateInstanceResolver(config)
+
         # Attempt initial clock sync
         try:
             self.bridge_clock.sync()
@@ -202,6 +206,22 @@ class DynAEPBridge:
     # -----------------------------------------------------------------------
 
     def process_event(self, event: dict) -> dict | DynAEPRejection:
+        # OPT-009: Template instance fast-exit. AOT-validated template
+        # instances skip the entire runtime validation pipeline.
+        target_id = event.get("target_id")
+        if target_id:
+            fast_exit = self.template_resolver.try_fast_exit(
+                target_id,
+                self.bridge_clock.now(),
+            )
+            if fast_exit.is_template_instance:
+                event["_temporal"] = {
+                    "bridge_time_ms": fast_exit.stamped_at,
+                    "fast_exit": True,
+                    "template_id": fast_exit.template_id,
+                }
+                return event
+
         # TA-1 Step 1: Temporal stamp with bridge clock
         temporal_result = self.temporal_validator.validate(event)
 
