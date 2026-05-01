@@ -30,6 +30,7 @@ from dynaep.temporal.validator import TemporalValidator, TemporalValidatorConfig
 from dynaep.temporal.causal import CausalOrderingEngine, CausalConfig, CausalEvent
 from dynaep.temporal.forecast import ForecastSidecar, ForecastConfig
 from dynaep.template.resolver import TemplateInstanceResolver
+from dynaep.persistence.buffered_ledger import BufferedLedger
 
 logger = logging.getLogger("dynaep.bridge")
 
@@ -176,6 +177,14 @@ class DynAEPBridge:
         # OPT-009: Template instance resolver for fast-exit
         self.template_resolver = TemplateInstanceResolver(config)
 
+        # OPT-006: Buffered evidence ledger
+        self.evidence_ledger = BufferedLedger(
+            bridge_clock=self.bridge_clock,
+            buffer_size=256,
+            flush_interval_s=5.0,
+            hash_chain_enabled=True,
+        )
+
         # Attempt initial clock sync
         try:
             self.bridge_clock.sync()
@@ -215,6 +224,12 @@ class DynAEPBridge:
                 self.bridge_clock.now(),
             )
             if fast_exit.is_template_instance:
+                # OPT-006: Record fast-exit in evidence ledger
+                self.evidence_ledger.record(
+                    "fast_exit_template",
+                    target_id,
+                    f"template={fast_exit.template_id}",
+                )
                 event["_temporal"] = {
                     "bridge_time_ms": fast_exit.stamped_at,
                     "fast_exit": True,
@@ -228,6 +243,12 @@ class DynAEPBridge:
         # TA-1 Step 2: Reject on temporal violations in strict mode
         if not temporal_result.accepted:
             violation_details = "; ".join(v.detail for v in temporal_result.violations)
+            # OPT-006: Record temporal rejection in evidence ledger
+            self.evidence_ledger.record(
+                "rejected_temporal",
+                event.get("target_id", event.get("dynaep_type", "unknown")),
+                violation_details,
+            )
             return DynAEPRejection(
                 target_id=event.get("target_id", event.get("dynaep_type", "unknown")),
                 error=f"Temporal rejection: {violation_details}",
@@ -254,6 +275,12 @@ class DynAEPBridge:
             )
             if not causal_result.ordered and has_regression:
                 violation_details = "; ".join(v.detail for v in causal_result.violations)
+                # OPT-006: Record causal rejection in evidence ledger
+                self.evidence_ledger.record(
+                    "rejected_causal",
+                    event.get("target_id", "unknown"),
+                    violation_details,
+                )
                 return DynAEPRejection(
                     target_id=event.get("target_id", "unknown"),
                     error=f"Causal rejection: {violation_details}",
@@ -274,6 +301,12 @@ class DynAEPBridge:
         if target_id and self.bridge_config.forecast_config and self.bridge_config.forecast_config.enabled:
             anomaly_result = self.forecast_sidecar.check_anomaly(target_id, event.get("coordinates", {}))
             if anomaly_result is not None and anomaly_result.is_anomaly:
+                # OPT-006: Record anomaly in evidence ledger
+                self.evidence_ledger.record(
+                    "anomaly_warned",
+                    target_id,
+                    f"score={anomaly_result.score:.2f}, rec={anomaly_result.recommendation}",
+                )
                 event["_anomaly"] = {
                     "score": anomaly_result.score,
                     "recommendation": anomaly_result.recommendation,
@@ -288,6 +321,20 @@ class DynAEPBridge:
             structural_result = self._process_dynaep_event(event)
         else:
             structural_result = event
+
+        # OPT-006: Record structural validation outcome in evidence ledger
+        if isinstance(structural_result, DynAEPRejection):
+            self.evidence_ledger.record(
+                "rejected_structural",
+                event.get("target_id", "unknown"),
+                structural_result.error,
+            )
+        else:
+            self.evidence_ledger.record(
+                "accepted",
+                event.get("target_id", event.get("dynaep_type", "unknown")),
+                event.get("type", "event"),
+            )
 
         # TA-1 Step 5: Attach temporal metadata to accepted events
         if isinstance(structural_result, dict):
@@ -637,6 +684,9 @@ class DynAEPBridge:
 
     def get_forecast_sidecar(self) -> ForecastSidecar:
         return self.forecast_sidecar
+
+    def get_evidence_ledger(self) -> BufferedLedger:
+        return self.evidence_ledger
 
 
 # ---------------------------------------------------------------------------

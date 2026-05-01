@@ -21,6 +21,7 @@ import { TemporalValidator, type TemporalValidatorConfig, type TemporalValidatio
 import { CausalOrderingEngine, type CausalConfig, type CausalEvent } from "./temporal/causal";
 import { ForecastSidecar, type ForecastConfig, type AnomalyResult } from "./temporal/forecast";
 import { TemplateInstanceResolver } from "./template/TemplateInstanceResolver";
+import { BufferedLedger, type LedgerConfig } from "./persistence/BufferedLedger";
 import {
   type TemporalRejectionEvent,
   type TemporalStampEvent,
@@ -118,6 +119,9 @@ export class DynAEPBridge {
   // OPT-009: Template instance fast-exit resolver
   private templateResolver: TemplateInstanceResolver;
 
+  // OPT-006: Buffered evidence ledger
+  private evidenceLedger: BufferedLedger;
+
   constructor(config: AEPConfig, bridgeConfig: DynAEPBridgeConfig) {
     this.config = config;
     this.liveElements = structuredClone(config.scene.elements);
@@ -186,6 +190,14 @@ export class DynAEPBridge {
     // OPT-009: Initialise template instance resolver
     this.templateResolver = new TemplateInstanceResolver(config.registry);
 
+    // OPT-006: Initialise buffered evidence ledger
+    this.evidenceLedger = new BufferedLedger(this.bridgeClock, {
+      bufferSize: 256,
+      flushIntervalMs: 5000,
+      hashChainEnabled: true,
+      persistencePath: null,
+    });
+
     // Attempt initial clock sync (non-blocking)
     this.bridgeClock.sync().catch(() => {
       console.warn("[dynAEP-TA] Initial clock sync failed, using system clock fallback");
@@ -227,6 +239,12 @@ export class DynAEPBridge {
         this.bridgeClock.now(),
       );
       if (fastExit.isTemplateInstance) {
+        // OPT-006: Record fast-exit in evidence ledger
+        this.evidenceLedger.record(
+          "fast_exit_template",
+          event.target_id,
+          `template=${fastExit.templateId}`,
+        );
         // Stamp with minimal temporal metadata for auditability
         (event as Record<string, unknown>)._temporal = {
           bridgeTimeMs: fastExit.stampedAt,
@@ -242,6 +260,12 @@ export class DynAEPBridge {
 
     // TA-1 Step 2: Reject on temporal violations in strict mode
     if (!temporalResult.accepted) {
+      // OPT-006: Record temporal rejection in evidence ledger
+      this.evidenceLedger.record(
+        "rejected_temporal",
+        event.target_id ?? "unknown",
+        temporalResult.violations.map((v) => v.detail).join("; "),
+      );
       const rejection: TemporalRejectionEvent = createTemporalRejectionEvent({
         targetId: event.target_id ?? event.dynaep_type ?? "unknown",
         error: temporalResult.violations.map((v) => v.detail).join("; "),
@@ -269,6 +293,12 @@ export class DynAEPBridge {
           (v) => v.type === "agent_clock_regression"
         );
         if (hasRegression) {
+          // OPT-006: Record causal rejection in evidence ledger
+          this.evidenceLedger.record(
+            "rejected_causal",
+            event.target_id ?? "unknown",
+            causalResult.violations.map((v) => v.detail).join("; "),
+          );
           const rejection: TemporalRejectionEvent = createTemporalRejectionEvent({
             targetId: event.target_id ?? "unknown",
             error: causalResult.violations.map((v) => v.detail).join("; "),
@@ -306,6 +336,12 @@ export class DynAEPBridge {
       if (anomalyResult !== null && anomalyResult.isAnomaly) {
         const anomalyAction = (this.bridgeConfig.forecast as Record<string, unknown>).anomaly_action ?? "warn";
         if (anomalyAction === "require_approval" && anomalyResult.recommendation === "require_approval") {
+          // OPT-006: Record anomaly rejection in evidence ledger
+          this.evidenceLedger.record(
+            "rejected_anomaly",
+            event.target_id,
+            `score=${anomalyResult.score.toFixed(2)}`,
+          );
           return this.createRejection(
             event.target_id,
             `Temporal anomaly detected (score=${anomalyResult.score.toFixed(2)}): requires approval`,
@@ -313,6 +349,12 @@ export class DynAEPBridge {
           );
         }
         // For "warn" and "log_only", attach anomaly metadata but proceed
+        // OPT-006: Record anomaly warning in evidence ledger
+        this.evidenceLedger.record(
+          "anomaly_warned",
+          event.target_id,
+          `score=${anomalyResult.score.toFixed(2)}, rec=${anomalyResult.recommendation}`,
+        );
         (event as Record<string, unknown>)._anomaly = {
           score: anomalyResult.score,
           recommendation: anomalyResult.recommendation,
@@ -331,6 +373,21 @@ export class DynAEPBridge {
       structuralResult = event;
     } else {
       structuralResult = event;
+    }
+
+    // OPT-006: Record structural validation outcome in evidence ledger
+    if ((structuralResult as any).dynaep_type === "DYNAEP_REJECTION") {
+      this.evidenceLedger.record(
+        "rejected_structural",
+        event.target_id ?? "unknown",
+        (structuralResult as any).error ?? "structural rejection",
+      );
+    } else {
+      this.evidenceLedger.record(
+        "accepted",
+        event.target_id ?? event.dynaep_type ?? "unknown",
+        event.type ?? "event",
+      );
     }
 
     // TA-1 Step 5: Attach temporal metadata to accepted events
@@ -990,6 +1047,14 @@ export class DynAEPBridge {
     return this.forecastSidecar;
   }
 
+  getEvidenceLedger(): BufferedLedger {
+    return this.evidenceLedger;
+  }
+
+  getTemplateResolver(): TemplateInstanceResolver {
+    return this.templateResolver;
+  }
+
   // -------------------------------------------------------------------------
   // TA-1: Clock Sync Broadcasting
   // -------------------------------------------------------------------------
@@ -999,6 +1064,9 @@ export class DynAEPBridge {
 
     // OPT-001: Start the forecast background worker
     this.forecastSidecar.startWorker();
+
+    // OPT-006: Start the evidence ledger auto-flush
+    this.evidenceLedger.startAutoFlush();
 
     const syncIntervalMs = this.bridgeConfig.timekeeping?.syncIntervalMs ?? 30000;
 
@@ -1035,5 +1103,9 @@ export class DynAEPBridge {
 
     // OPT-001: Stop the forecast background worker
     this.forecastSidecar.stopWorker();
+
+    // OPT-006: Final flush and stop the evidence ledger
+    this.evidenceLedger.flush();
+    this.evidenceLedger.stopAutoFlush();
   }
 }
