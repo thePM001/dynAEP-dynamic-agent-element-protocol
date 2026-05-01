@@ -1,0 +1,24 @@
+{
+  "name": "typescript",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "bench": "tsx ../../performance-tests/bench-012-end-to-end.ts",
+    "bench:all": "tsx ../../performance-tests/run-all.ts",
+    "bench:compare": "node ../../scripts/compare-performance-tests.js",
+    "bench:throughput": "tsx ../../performance-tests/bench-001-event-throughput.ts",
+    "bench:hotpath": "tsx ../../performance-tests/bench-003-hot-path-latency.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
+  }
+}
