@@ -6,7 +6,8 @@
 **Author:** thePM_001
 **License:** Apache-2.0
 
-**How to install dynAEP ?:** copy the URL of the GitHub repo into your reasoning LLM + tell it "analyze the repo and prepare implementation plan for dynAEP integration into our project".
+**How to install dynAEP ?:
+** copy the URL of the GitHub repo into your reasoning LLM + tell it "analyze the repo and prepare implementation plan for dynAEP integration into our project".
 
 ## 1. What Is dynAEP
 
