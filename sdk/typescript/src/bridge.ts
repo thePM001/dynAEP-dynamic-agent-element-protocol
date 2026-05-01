@@ -22,6 +22,19 @@ import { CausalOrderingEngine, type CausalConfig, type CausalEvent } from "./tem
 import { ForecastSidecar, type ForecastConfig, type AnomalyResult } from "./temporal/forecast";
 import { TemplateInstanceResolver } from "./template/TemplateInstanceResolver";
 import { BufferedLedger, type LedgerConfig } from "./persistence/BufferedLedger";
+
+// OPT-002: Unified Rego evaluator with decision cache
+import { UnifiedRegoEvaluator, type RegoConfig } from "./rego/UnifiedRegoEvaluator";
+import type { RegoInput, RegoResult } from "./rego/RegoDecisionCache";
+
+// OPT-003: Unified content scanner with Aho-Corasick
+import { UnifiedScanner, type ScannerConfig, type ScanResult } from "./scanners/UnifiedScanner";
+
+// OPT-004: Chain executor types
+import type { ChainExecutor, ChainExecutionConfig, StepExecutor } from "./chain/types";
+import { ParallelChainExecutor } from "./chain/ParallelChainExecutor";
+import { SequentialChainExecutor } from "./chain/SequentialChainExecutor";
+
 import {
   type TemporalRejectionEvent,
   type TemporalStampEvent,
@@ -60,6 +73,15 @@ export interface DynAEPBridgeConfig {
   temporal_validation?: TemporalValidatorConfig;
   causal_ordering?: CausalConfig;
   forecast?: ForecastConfig;
+  // OPT-002: Unified Rego evaluator configuration
+  rego?: RegoConfig;
+  // OPT-003: Unified content scanner configuration
+  scanners?: {
+    engine: "unified" | "sequential";
+    configs: ScannerConfig[];
+  };
+  // OPT-004: Chain execution configuration
+  chain_execution?: ChainExecutionConfig;
 }
 
 export interface DynAEPRejection {
@@ -121,6 +143,13 @@ export class DynAEPBridge {
 
   // OPT-006: Buffered evidence ledger
   private evidenceLedger: BufferedLedger;
+
+  // OPT-002: Unified Rego evaluator
+  private regoEvaluator: UnifiedRegoEvaluator;
+
+  // OPT-003: Unified content scanner
+  private contentScanner: UnifiedScanner | null = null;
+  private scannerEngine: "unified" | "sequential" = "unified";
 
   constructor(config: AEPConfig, bridgeConfig: DynAEPBridgeConfig) {
     this.config = config;
@@ -197,6 +226,24 @@ export class DynAEPBridge {
       hashChainEnabled: true,
       persistencePath: null,
     });
+
+    // OPT-002: Initialise unified Rego evaluator
+    const regoConfig: RegoConfig = bridgeConfig.rego ?? {
+      policyPath: "./aep-policy.rego",
+      evaluation: "precompiled",
+      bundleMode: "unified",
+      decisionCacheSize: 5000,
+      cacheInvalidateOnReload: true,
+    };
+    this.regoEvaluator = new UnifiedRegoEvaluator(regoConfig);
+
+    // OPT-003: Initialise unified content scanner
+    if (bridgeConfig.scanners) {
+      this.scannerEngine = bridgeConfig.scanners.engine;
+      if (bridgeConfig.scanners.engine === "unified" && bridgeConfig.scanners.configs.length > 0) {
+        this.contentScanner = new UnifiedScanner(bridgeConfig.scanners.configs);
+      }
+    }
 
     // Attempt initial clock sync (non-blocking)
     this.bridgeClock.sync().catch(() => {
@@ -359,6 +406,90 @@ export class DynAEPBridge {
           score: anomalyResult.score,
           recommendation: anomalyResult.recommendation,
         };
+      }
+    }
+
+    // OPT-002: Unified Rego policy evaluation (cached)
+    const regoInput: RegoInput = {
+      scene: this.buildRegoScene(),
+      registry: this.buildRegoRegistry(),
+      theme: { aep_version: this.config.scene.aep_version, component_styles: this.config.theme.component_styles },
+      event: {
+        target_id: event.target_id ?? "",
+        type: event.type ?? "CUSTOM",
+        dynaep_type: event.dynaep_type ?? "",
+        mutation: event.mutation ?? {},
+      },
+    };
+
+    // Attach temporal data if present
+    if (temporalResult.bridgeTimestamp) {
+      regoInput.temporal = {
+        drift_ms: temporalResult.bridgeTimestamp.driftMs ?? 0,
+        agent_time_ms: temporalResult.bridgeTimestamp.agentTimeMs ?? 0,
+        bridge_time_ms: temporalResult.bridgeTimestamp.bridgeTimeMs,
+      };
+      regoInput.config = {
+        timekeeping: {
+          max_drift_ms: this.bridgeConfig.timekeeping?.maxDriftMs ?? 50,
+          max_future_ms: this.bridgeConfig.temporal_validation?.maxFutureMs ?? 500,
+          max_staleness_ms: this.bridgeConfig.temporal_validation?.maxStalenessMs ?? 5000,
+        },
+      };
+    }
+
+    // Attach perception data if present
+    if (event._perception) {
+      regoInput.perception = event._perception;
+    }
+
+    const regoResult = this.regoEvaluator.evaluate(regoInput);
+    const regoDenials = [
+      ...regoResult.structural_deny,
+      ...regoResult.temporal_deny,
+      ...regoResult.perception_deny,
+    ];
+
+    if (regoDenials.length > 0 && this.bridgeConfig.validation.mode === "strict") {
+      this.evidenceLedger.record(
+        "rejected_rego",
+        event.target_id ?? "unknown",
+        regoDenials.join("; "),
+      );
+      return this.createRejection(
+        event.target_id ?? "unknown",
+        `Rego policy violation: ${regoDenials[0]}`,
+        event.timestamp,
+      );
+    }
+
+    // OPT-003: Content scanner (scan payload text for secrets, injection, PII)
+    if (this.contentScanner && this.scannerEngine === "unified") {
+      const textPayload = this.extractTextPayload(event);
+      if (textPayload.length > 0) {
+        const scanResults = this.contentScanner.scan(textPayload);
+        const hardFindings = scanResults.filter(r => r.severity === "hard");
+        if (hardFindings.length > 0) {
+          this.evidenceLedger.record(
+            "rejected_scanner",
+            event.target_id ?? "unknown",
+            `${hardFindings[0].scannerId}:${hardFindings[0].patternId} match="${hardFindings[0].match.text}"`,
+          );
+          return this.createRejection(
+            event.target_id ?? "unknown",
+            `Content violation (${hardFindings[0].scannerLabel}): ${hardFindings[0].patternId} detected`,
+            event.timestamp,
+          );
+        }
+        // Attach soft findings as metadata
+        if (scanResults.length > 0) {
+          (event as Record<string, unknown>)._scanFindings = scanResults.map(r => ({
+            scanner: r.scannerId,
+            pattern: r.patternId,
+            severity: r.severity,
+            match: r.match.text,
+          }));
+        }
       }
     }
 
@@ -709,6 +840,11 @@ export class DynAEPBridge {
       } catch { /* skip */ }
     }
 
+    // OPT-002: Invalidate Rego decision cache on schema reload
+    this.regoEvaluator.reload([]).catch(() => {
+      console.warn("[dynAEP-OPT002] Rego policy reload/cache invalidation failed");
+    });
+
     // TA-1: Reset causal ordering on schema reload
     const oldVectorClock = this.causalEngine.getVectorClock();
     this.causalEngine.reset();
@@ -1028,6 +1164,70 @@ export class DynAEPBridge {
   }
 
   // -------------------------------------------------------------------------
+  // OPT-002: Rego Scene/Registry Builders
+  // -------------------------------------------------------------------------
+
+  private buildRegoScene(): Record<string, any> {
+    const scene: Record<string, any> = { aep_version: this.config.scene.aep_version };
+    for (const [id, el] of Object.entries(this.liveElements)) {
+      scene[id] = {
+        z: el.z,
+        parent: el.parent,
+        children: el.children,
+        visible: el.visible,
+      };
+    }
+    return scene;
+  }
+
+  private buildRegoRegistry(): Record<string, any> {
+    const registry: Record<string, any> = { aep_version: this.config.scene.aep_version };
+    for (const [id, entry] of Object.entries(this.config.registry)) {
+      registry[id] = { skin_binding: (entry as any).skin_binding ?? "" };
+    }
+    return registry;
+  }
+
+  // -------------------------------------------------------------------------
+  // OPT-003: Text Payload Extraction for Content Scanning
+  // -------------------------------------------------------------------------
+
+  private extractTextPayload(event: AGUIEvent): string {
+    const parts: string[] = [];
+    // Extract from mutation values
+    if (event.mutation) {
+      for (const value of Object.values(event.mutation)) {
+        if (typeof value === "string") parts.push(value);
+      }
+    }
+    // Extract from delta values
+    if (Array.isArray(event.delta)) {
+      for (const op of event.delta) {
+        if (typeof op.value === "string") parts.push(op.value);
+      }
+    }
+    // Extract from query string
+    if (typeof event.query === "string") parts.push(event.query);
+    // Extract from any text/content/body/label fields
+    for (const key of ["text", "content", "body", "label", "code", "html", "css", "script"]) {
+      if (typeof event[key] === "string") parts.push(event[key]);
+    }
+    return parts.join(" ");
+  }
+
+  // -------------------------------------------------------------------------
+  // OPT-002/003: Accessors
+  // -------------------------------------------------------------------------
+
+  getRegoEvaluator(): UnifiedRegoEvaluator {
+    return this.regoEvaluator;
+  }
+
+  getContentScanner(): UnifiedScanner | null {
+    return this.contentScanner;
+  }
+
+  // -------------------------------------------------------------------------
   // TA-1: Temporal Authority Accessors
   // -------------------------------------------------------------------------
 
@@ -1053,6 +1253,26 @@ export class DynAEPBridge {
 
   getTemplateResolver(): TemplateInstanceResolver {
     return this.templateResolver;
+  }
+
+  // -------------------------------------------------------------------------
+  // OPT-004: Chain Executor Factory
+  // -------------------------------------------------------------------------
+
+  /**
+   * Create a chain executor based on the configured execution mode.
+   * "parallel" mode uses 5-stage concurrent execution (OPT-004).
+   * "sequential" mode preserves the original step-by-step evaluation.
+   *
+   * @param steps - Array of exactly 15 StepExecutor implementations
+   * @returns ChainExecutor configured per bridge settings
+   */
+  createChainExecutor(steps: StepExecutor[]): ChainExecutor {
+    const mode = this.bridgeConfig.chain_execution?.mode ?? "sequential";
+    if (mode === "parallel") {
+      return new ParallelChainExecutor(steps);
+    }
+    return new SequentialChainExecutor(steps);
   }
 
   // -------------------------------------------------------------------------

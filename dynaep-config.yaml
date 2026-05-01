@@ -51,6 +51,42 @@ rego:
                                     #   wasm: @open-policy-agent/opa-wasm (~200KB)
                                     #   cli: opa binary via subprocess (server only)
                                     #   precompiled: pre-compiled decision table (zero deps)
+  bundle_mode: "unified"            # unified | separate
+                                    #   unified: single WASM bundle with 3 entrypoints
+                                    #   separate: three individual WASM bundles
+  decision_cache_size: 5000         # LRU cache entries (0 to disable)
+  cache_invalidate_on_reload: true  # safety invariant: always true
+  unified_bundle_path: "./policies/aep-unified-bundle.tar.gz"
+  separate_policy_paths:
+    structural: "./policies/aep-policy.rego"
+    temporal: "./policies/temporal-policy.rego"
+    perception: "./policies/perception-policy.rego"
+
+# ---------------------------------------------------------------------------
+# CHAIN EXECUTION (OPT-004)
+# ---------------------------------------------------------------------------
+
+chain_execution:
+  mode: "parallel"                  # parallel | sequential
+                                    #   parallel: 5-stage concurrent execution
+                                    #     Stage A: Steps 0-4 (independent reads)
+                                    #     Stage B: Steps 5-9 (5←1 session, 6←2 ring)
+                                    #     Stage C: Steps 10-12 (active-mode checks)
+                                    #     Stage D: Step 13 (13←7 covenant)
+                                    #     Stage E: Step 14 (content scanners)
+                                    #   sequential: original step-by-step order (debugging)
+
+# ---------------------------------------------------------------------------
+# CONTENT SCANNERS (OPT-003)
+# ---------------------------------------------------------------------------
+
+scanners:
+  engine: "unified"                 # unified | sequential
+                                    #   unified: single-pass Aho-Corasick automaton
+                                    #   sequential: per-scanner regex evaluation (legacy)
+  # Scanner configurations are loaded programmatically via ScannerConfig[].
+  # The bridge accepts scanner configs at construction time.
+  # Hard-severity matches abort immediately. Soft findings are attached as metadata.
 
 # ---------------------------------------------------------------------------
 # RUNTIME REFLECTION
@@ -175,6 +211,18 @@ perception:
   governed_envelope_mode: "overwrite"  # overwrite | metadata_only
   modality_overrides: {}               # per-modality comfortable range overrides
   rego_policy_path: "./policies/perception-policy.rego"
+
+# ---------------------------------------------------------------------------
+# OPT-007: LATTICE MEMORY (Attractor Indexing)
+# ---------------------------------------------------------------------------
+
+lattice_memory:
+  enabled: true
+  max_attractors: 2000                   # LRU capacity for attractor index
+  similarity_threshold: 0.95            # cosine similarity threshold for matching
+  index_type: "lsh"                     # lsh | brute_force
+  lsh_tables: 8                         # number of hash tables (L parameter)
+  lsh_hash_dimension: 4                 # bits per hash (k parameter)
 
 temporal_authority:
   audit_trail_depth: 500               # max mutation records per element

@@ -32,6 +32,19 @@ from dynaep.temporal.forecast import ForecastSidecar, ForecastConfig
 from dynaep.template.resolver import TemplateInstanceResolver
 from dynaep.persistence.buffered_ledger import BufferedLedger
 
+# OPT-002: Unified Rego evaluator with decision cache
+from dynaep.rego.unified_evaluator import UnifiedRegoEvaluator, RegoConfig
+from dynaep.rego.decision_cache import RegoResult
+
+# OPT-003: Unified content scanner with Aho-Corasick
+from dynaep.scanners.unified_scanner import UnifiedScanner, ScannerConfig, ScanResult
+
+# OPT-004: Chain executor
+from dynaep.chain.types import ChainExecutionConfig
+from dynaep.chain.types import StepExecutor as StepExecutorProtocol
+from dynaep.chain.parallel_executor import ParallelChainExecutor
+from dynaep.chain.sequential_executor import SequentialChainExecutor
+
 logger = logging.getLogger("dynaep.bridge")
 
 
@@ -69,6 +82,13 @@ class DynAEPBridgeConfig:
     temporal_validator_config: Optional[TemporalValidatorConfig] = None
     causal_config: Optional[CausalConfig] = None
     forecast_config: Optional[ForecastConfig] = None
+    # OPT-002: Unified Rego evaluator configuration
+    rego_config: Optional[RegoConfig] = None
+    # OPT-003: Unified content scanner configuration
+    scanner_engine: str = "unified"  # unified | sequential
+    scanner_configs: list[ScannerConfig] = field(default_factory=list)
+    # OPT-004: Chain execution configuration
+    chain_execution: Optional[ChainExecutionConfig] = None
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +204,22 @@ class DynAEPBridge:
             flush_interval_s=5.0,
             hash_chain_enabled=True,
         )
+
+        # OPT-002: Initialise unified Rego evaluator
+        rego_cfg = self.bridge_config.rego_config or RegoConfig(
+            policy_path="./aep-policy.rego",
+            evaluation="precompiled",
+            bundle_mode="unified",
+            decision_cache_size=5000,
+            cache_invalidate_on_reload=True,
+        )
+        self.rego_evaluator = UnifiedRegoEvaluator(rego_cfg)
+
+        # OPT-003: Initialise unified content scanner
+        self.scanner_engine = self.bridge_config.scanner_engine
+        self.content_scanner: Optional[UnifiedScanner] = None
+        if self.scanner_engine == "unified" and self.bridge_config.scanner_configs:
+            self.content_scanner = UnifiedScanner(self.bridge_config.scanner_configs)
 
         # Attempt initial clock sync
         try:
@@ -311,6 +347,83 @@ class DynAEPBridge:
                     "score": anomaly_result.score,
                     "recommendation": anomaly_result.recommendation,
                 }
+
+        # OPT-002: Unified Rego policy evaluation (cached)
+        rego_input: dict[str, Any] = {
+            "scene": self._build_rego_scene(),
+            "registry": self._build_rego_registry(),
+            "theme": {"aep_version": getattr(self.config, "scene_aep_version", "1.1"), "component_styles": getattr(self.config, "component_styles", {})},
+            "event": {
+                "target_id": event.get("target_id", ""),
+                "type": event.get("type", "CUSTOM"),
+                "dynaep_type": event.get("dynaep_type", ""),
+                "mutation": event.get("mutation", {}),
+            },
+        }
+
+        # Attach temporal data if present
+        if hasattr(temporal_result, "bridge_timestamp") and temporal_result.bridge_timestamp:
+            rego_input["temporal"] = {
+                "drift_ms": getattr(temporal_result.bridge_timestamp, "drift_ms", 0),
+                "agent_time_ms": getattr(temporal_result.bridge_timestamp, "agent_time_ms", 0),
+                "bridge_time_ms": temporal_result.bridge_timestamp.bridge_time_ms,
+            }
+            clock_cfg = self.bridge_config.clock_config
+            temp_cfg = self.bridge_config.temporal_validator_config
+            rego_input["config"] = {
+                "timekeeping": {
+                    "max_drift_ms": clock_cfg.max_drift_ms if clock_cfg else 50,
+                    "max_future_ms": temp_cfg.max_future_ms if temp_cfg else 500,
+                    "max_staleness_ms": temp_cfg.max_staleness_ms if temp_cfg else 5000,
+                },
+            }
+
+        # Attach perception data if present
+        if "_perception" in event:
+            rego_input["perception"] = event["_perception"]
+
+        rego_result = self.rego_evaluator.evaluate(rego_input)
+        rego_denials = (
+            rego_result.structural_deny
+            + rego_result.temporal_deny
+            + rego_result.perception_deny
+        )
+
+        if rego_denials and self.bridge_config.validation_mode == "strict":
+            self.evidence_ledger.record(
+                "rejected_rego",
+                event.get("target_id", "unknown"),
+                "; ".join(rego_denials),
+            )
+            return DynAEPRejection(
+                target_id=event.get("target_id", "unknown"),
+                error=f"Rego policy violation: {rego_denials[0]}",
+                original_event_timestamp=event.get("timestamp", time.time()),
+            )
+
+        # OPT-003: Content scanner (scan payload text for secrets, injection, PII)
+        if self.content_scanner and self.scanner_engine == "unified":
+            text_payload = self._extract_text_payload(event)
+            if text_payload:
+                scan_results = self.content_scanner.scan(text_payload)
+                hard_findings = [r for r in scan_results if r.severity == "hard"]
+                if hard_findings:
+                    finding = hard_findings[0]
+                    self.evidence_ledger.record(
+                        "rejected_scanner",
+                        event.get("target_id", "unknown"),
+                        f"{finding.scanner_id}:{finding.pattern_id} match=\"{finding.match_text}\"",
+                    )
+                    return DynAEPRejection(
+                        target_id=event.get("target_id", "unknown"),
+                        error=f"Content violation ({finding.scanner_label}): {finding.pattern_id} detected",
+                        original_event_timestamp=event.get("timestamp", time.time()),
+                    )
+                if scan_results:
+                    event["_scan_findings"] = [
+                        {"scanner": r.scanner_id, "pattern": r.pattern_id, "severity": r.severity, "match": r.match_text}
+                        for r in scan_results
+                    ]
 
         # Proceed with structural validation (existing pipeline)
         event_type = event.get("type")
@@ -654,6 +767,12 @@ class DynAEPBridge:
             for k, v in new_config.elements.items()
         }
 
+        # OPT-002: Invalidate Rego decision cache on schema reload
+        try:
+            self.rego_evaluator.reload([])
+        except Exception as exc:
+            logger.warning("Rego cache invalidation on reload failed: %s", exc)
+
         # TA-1: Reset causal ordering on schema reload
         self.causal_engine.reset()
 
@@ -668,6 +787,63 @@ class DynAEPBridge:
             "new_revision": new_config.reg_schema_revision,
             "aep_version": new_config.scene_aep_version,
         }
+
+    # -----------------------------------------------------------------------
+    # OPT-002: Rego Scene/Registry Builders
+    # -----------------------------------------------------------------------
+
+    def _build_rego_scene(self) -> dict:
+        scene: dict[str, Any] = {"aep_version": getattr(self.config, "scene_aep_version", "1.1")}
+        for el_id, el in self.live_elements.items():
+            scene[el_id] = {
+                "z": el.z,
+                "parent": el.parent,
+                "children": list(el.children),
+                "visible": el.visible,
+            }
+        return scene
+
+    def _build_rego_registry(self) -> dict:
+        registry: dict[str, Any] = {"aep_version": getattr(self.config, "scene_aep_version", "1.1")}
+        for el_id in self.config.registry:
+            entry = self.config.registry[el_id]
+            registry[el_id] = {"skin_binding": getattr(entry, "skin_binding", "")}
+        return registry
+
+    # -----------------------------------------------------------------------
+    # OPT-003: Text Payload Extraction for Content Scanning
+    # -----------------------------------------------------------------------
+
+    def _extract_text_payload(self, event: dict) -> str:
+        parts: list[str] = []
+        mutation = event.get("mutation")
+        if isinstance(mutation, dict):
+            for v in mutation.values():
+                if isinstance(v, str):
+                    parts.append(v)
+        delta = event.get("delta")
+        if isinstance(delta, list):
+            for op in delta:
+                if isinstance(op, dict) and isinstance(op.get("value"), str):
+                    parts.append(op["value"])
+        query = event.get("query")
+        if isinstance(query, str):
+            parts.append(query)
+        for key in ("text", "content", "body", "label", "code", "html", "css", "script"):
+            val = event.get(key)
+            if isinstance(val, str):
+                parts.append(val)
+        return " ".join(parts)
+
+    # -----------------------------------------------------------------------
+    # OPT-002/003: Accessors
+    # -----------------------------------------------------------------------
+
+    def get_rego_evaluator(self) -> UnifiedRegoEvaluator:
+        return self.rego_evaluator
+
+    def get_content_scanner(self) -> Optional[UnifiedScanner]:
+        return self.content_scanner
 
     # -----------------------------------------------------------------------
     # TA-1: Temporal Authority Accessors
@@ -687,6 +863,24 @@ class DynAEPBridge:
 
     def get_evidence_ledger(self) -> BufferedLedger:
         return self.evidence_ledger
+
+    # -----------------------------------------------------------------------
+    # OPT-004: Chain Executor Factory
+    # -----------------------------------------------------------------------
+
+    def create_chain_executor(
+        self, steps: list[StepExecutorProtocol]
+    ) -> "SequentialChainExecutor | ParallelChainExecutor":
+        """
+        Create a chain executor based on the configured execution mode.
+        "parallel" uses 5-stage concurrent execution (OPT-004).
+        "sequential" preserves the original step-by-step evaluation.
+        """
+        chain_cfg = self.bridge_config.chain_execution
+        mode = chain_cfg.mode if chain_cfg else "sequential"
+        if mode == "parallel":
+            return ParallelChainExecutor(steps)
+        return SequentialChainExecutor(steps)
 
 
 # ---------------------------------------------------------------------------
