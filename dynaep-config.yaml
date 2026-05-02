@@ -1,6 +1,6 @@
 aep_version: "1.1"
-dynaep_version: "0.2"
-schema_revision: 1
+dynaep_version: "0.4"
+schema_revision: 2
 
 # ===========================================================================
 # dynAEP Configuration v0.2
@@ -175,6 +175,14 @@ timekeeping:
   bridge_is_authority: true         # bridge OVERWRITES agent timestamps
   log_drift_warnings: true          # log when drift exceeds 50% of threshold
 
+  # TA-3.2: TIM-Compatible Clock Quality Tracking
+  tim:
+    enabled: true
+    holdover_threshold: 3             # consecutive failures before LOCKED->HOLDOVER
+    freewheel_threshold: 5            # consecutive failures before HOLDOVER->FREEWHEEL
+    uncertainty_estimation: "variance" # variance (Welford) | fixed
+    fixed_uncertainty_ns: 10000000    # fallback: 10ms in nanoseconds
+
 causal_ordering:
   enabled: true
   max_reorder_buffer_size: 64       # buffer up to 64 events for reordering
@@ -183,6 +191,17 @@ causal_ordering:
   enable_vector_clocks: true        # per-agent Lamport vector clocks
   enable_element_history: true      # retain causal history per element
   history_depth: 100                # retain last 100 events per element
+
+  # TA-3.1: Durable Causal State Persistence
+  persistence:
+    enabled: true
+    backend: "file"                   # file | sqlite | external
+    path: "./.dynaep-causal-state"    # storage directory (file) or db path (sqlite)
+    flush_interval_ms: 100            # batched write flush interval
+    flush_batch_size: 100             # max entries before forced flush
+    compact_interval_ms: 3600000      # compaction every hour (file backend)
+    recovery_on_startup: true         # attempt state recovery on bridge start
+    max_recovery_gap_ms: 60000        # reject recovery if state older than 60s
 
 forecast:
   enabled: false                    # disabled by default (requires TimesFM)

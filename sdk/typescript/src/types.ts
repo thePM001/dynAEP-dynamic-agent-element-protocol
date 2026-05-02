@@ -32,6 +32,9 @@ export type {
   TemporalForecastEvent,
   TemporalAnomalyEvent,
   TemporalResetEvent,
+  TemporalRecoveryEvent,
+  AgentReregisterEvent,
+  ReregisterResultEvent,
   TemporalEvent,
 } from "./temporal/events";
 
@@ -40,6 +43,54 @@ export type { SceneGraph, OrderingResult } from "./causal/PartitionedCausalEngin
 export { PartitionedCausalEngine } from "./causal/PartitionedCausalEngine";
 export { SparseVectorClock } from "./causal/SparseVectorClock";
 export type { PartitionStats } from "./causal/SubtreeOrderingContext";
+
+// TA-3.1: Durable Causal State
+export type {
+  DurableCausalStore,
+  BufferedEvent,
+  DependencyEdge,
+  DependencyGraph,
+  AgentRegistration,
+  CausalStateSnapshot,
+  CausalPersistenceConfig,
+} from "./causal/DurableCausalStore";
+export { FileBasedCausalStore } from "./causal/FileBasedCausalStore";
+export { SqliteCausalStore } from "./causal/SqliteCausalStore";
+export { ExternalCausalStore } from "./causal/ExternalCausalStore";
+export type { ExternalKeyValueBackend } from "./causal/ExternalCausalStore";
+
+// TA-3.2: TIM Clock Quality Tracking
+export { ClockQualityTracker } from "./temporal/ClockQualityTracker";
+export type {
+  TIMConfig,
+  TIMMetadata,
+  SyncState,
+  ConfidenceClass,
+  AnomalyFlag,
+} from "./temporal/ClockQualityTracker";
+
+// TA-3.3: Workflow Temporal Primitives
+export type {
+  DeadlineHandle,
+  ScheduleHandle,
+  SuspendedTask,
+  SerializedDeadline,
+  SerializedSchedule,
+  SerializedSuspend,
+  TemporalPrimitivesConfig,
+} from "./workflow/TemporalPrimitives";
+export {
+  TemporalDeadline,
+  TemporalSchedule,
+  TemporalSleepResume,
+  TemporalTimeout,
+  TemporalPrimitives,
+  TemporalTimeoutError,
+} from "./workflow/TemporalPrimitives";
+
+// TA-3.4: Bridge Recovery Protocol
+export type { RecoveryConfig, RecoveryResult } from "./recovery/BridgeRecoveryProtocol";
+export { BridgeRecoveryProtocol } from "./recovery/BridgeRecoveryProtocol";
 
 // OPT-007: Lattice Memory Attractor Indexing
 export type { AttractorConfig, LedgerAttractor, AttractorStats } from "./lattice/AttractorIndex";

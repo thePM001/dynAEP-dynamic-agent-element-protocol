@@ -10,6 +10,7 @@ import type { PerceptionRegistry, ModalityProfile, TemporalAnnotation, Perceptio
 import type { PerceptionEngine, GovernedEnvelope, TemporalOutputEvent } from "./perception-engine";
 import type { TemporalAuthority, TemporalAuditEntry } from "./authority";
 import type { AdaptivePerceptionProfile } from "./perception-profile";
+import type { AsyncBridgeClock } from "./AsyncBridgeClock";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,7 +31,8 @@ export type TemporalQueryOperation =
   | "mutation_frequency"
   | "staleness_check"
   | "audit_trail"
-  | "comfortable_range";
+  | "comfortable_range"
+  | "clock_quality";
 
 /**
  * Input parameters for a temporal query. The operation field selects
@@ -69,6 +71,14 @@ export interface TemporalQueryResult {
   isStale?: boolean;
   auditEntries?: TemporalAuditEntry[];
   comfortableRange?: { min: number; max: number } | null;
+  clockQuality?: {
+    sync_state: string;
+    uncertainty_ns: number;
+    sequence_token: number;
+    sync_source: string;
+    confidence_class: string;
+    anomaly_flags: string[];
+  } | null;
 }
 
 /**
@@ -119,6 +129,7 @@ export function buildTemporalQueryToolDefinition(): TemporalQueryToolDefinition 
           "staleness_check",
           "audit_trail",
           "comfortable_range",
+          "clock_quality",
         ],
       },
       modality: {
@@ -184,15 +195,18 @@ export class TemporalQueryTool {
   private readonly registry: PerceptionRegistry;
   private readonly engine: PerceptionEngine;
   private readonly authority: TemporalAuthority;
+  private readonly clock: AsyncBridgeClock | null;
 
   constructor(
     registry: PerceptionRegistry,
     engine: PerceptionEngine,
     authority: TemporalAuthority,
+    clock?: AsyncBridgeClock,
   ) {
     this.registry = registry;
     this.engine = engine;
     this.authority = authority;
+    this.clock = clock ?? null;
   }
 
   /**
@@ -224,6 +238,8 @@ export class TemporalQueryTool {
         return this.auditTrail(input);
       case "comfortable_range":
         return this.comfortableRange(input);
+      case "clock_quality":
+        return this.clockQuality();
       default:
         return {
           operation: input.operation,
@@ -491,6 +507,28 @@ export class TemporalQueryTool {
       success: true,
       error: null,
       comfortableRange: range,
+    };
+  }
+
+  /**
+   * TA-3.2: Return the current TIM-compatible clock quality metadata
+   * from the bridge clock's ClockQualityTracker.
+   */
+  private clockQuality(): TemporalQueryResult {
+    if (!this.clock) {
+      return {
+        operation: "clock_quality",
+        success: false,
+        error: "Bridge clock not available for clock quality queries",
+      };
+    }
+
+    const quality = this.clock.getClockQuality();
+    return {
+      operation: "clock_quality",
+      success: true,
+      error: null,
+      clockQuality: quality,
     };
   }
 }

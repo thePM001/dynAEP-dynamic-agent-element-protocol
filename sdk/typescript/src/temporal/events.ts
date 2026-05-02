@@ -8,6 +8,7 @@
 import type { BridgeTimestamp } from "./clock";
 import type { TemporalViolation } from "./validator";
 import type { ForecastPoint, RuntimeCoordinates } from "./forecast";
+import type { TIMMetadata } from "./ClockQualityTracker";
 
 // ---------------------------------------------------------------------------
 // Event Interfaces
@@ -24,6 +25,7 @@ export interface ClockSyncEvent {
   source: "ntp" | "ptp" | "system";
   offsetMs: number;
   syncedAt: number;
+  tim?: TIMMetadata;
 }
 
 /**
@@ -121,12 +123,61 @@ export interface TemporalResetEvent {
   resetAt: number;
 }
 
+/**
+ * TA-3.1: Emitted when the bridge successfully recovers causal state
+ * from a durable store after a restart. Agents receiving this event
+ * should re-register with their last known sequence to resume causal
+ * ordering without a full reset.
+ */
+export interface TemporalRecoveryEvent {
+  type: "CUSTOM";
+  dynaep_type: "AEP_TEMPORAL_RECOVERY";
+  recoveredAt: number;
+  restoredAgents: string[];
+  restoredVectorClock: Record<string, number>;
+  restoredCausalPosition: number;
+  stateAge: string;
+  gapMs: number;
+  droppedEvents: number;
+  source: "file" | "sqlite" | "external";
+}
+
+/**
+ * TA-3.4: Sent by an agent to re-register with the bridge after
+ * receiving an AEP_TEMPORAL_RECOVERY event.
+ */
+export interface AgentReregisterEvent {
+  type: "CUSTOM";
+  dynaep_type: "AEP_AGENT_REREGISTER";
+  agentId: string;
+  lastSequence: number;
+  lastEventId: string;
+  capabilities: string[];
+}
+
+/**
+ * TA-3.4: Sent by the bridge in response to an AEP_AGENT_REREGISTER
+ * event, telling the agent whether it can resume, must reset, or is unknown.
+ */
+export interface ReregisterResultEvent {
+  type: "CUSTOM";
+  dynaep_type: "AEP_REREGISTER_RESULT";
+  agentId: string;
+  status: "resumed" | "reset" | "unknown";
+  restoredSequence: number;
+  gapEvents: number;
+  bridgeClockState: {
+    sync_state: string;
+    confidence_class: string;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Union Type
 // ---------------------------------------------------------------------------
 
 /**
- * Discriminated union of all seven temporal event types. Use the
+ * Discriminated union of all temporal event types. Use the
  * dynaep_type field to narrow to a specific variant.
  */
 export type TemporalEvent =
@@ -136,7 +187,10 @@ export type TemporalEvent =
   | CausalViolationEvent
   | TemporalForecastEvent
   | TemporalAnomalyEvent
-  | TemporalResetEvent;
+  | TemporalResetEvent
+  | TemporalRecoveryEvent
+  | AgentReregisterEvent
+  | ReregisterResultEvent;
 
 // ---------------------------------------------------------------------------
 // Type Guard Functions
@@ -205,6 +259,33 @@ export function isTemporalResetEvent(e: unknown): e is TemporalResetEvent {
   return obj.type === "CUSTOM" && obj.dynaep_type === "AEP_TEMPORAL_RESET";
 }
 
+/**
+ * Returns true if the given event is a TemporalRecoveryEvent.
+ */
+export function isTemporalRecoveryEvent(e: unknown): e is TemporalRecoveryEvent {
+  if (typeof e !== "object" || e === null) return false;
+  const obj = e as Record<string, unknown>;
+  return obj.type === "CUSTOM" && obj.dynaep_type === "AEP_TEMPORAL_RECOVERY";
+}
+
+/**
+ * Returns true if the given event is an AgentReregisterEvent.
+ */
+export function isAgentReregisterEvent(e: unknown): e is AgentReregisterEvent {
+  if (typeof e !== "object" || e === null) return false;
+  const obj = e as Record<string, unknown>;
+  return obj.type === "CUSTOM" && obj.dynaep_type === "AEP_AGENT_REREGISTER";
+}
+
+/**
+ * Returns true if the given event is a ReregisterResultEvent.
+ */
+export function isReregisterResultEvent(e: unknown): e is ReregisterResultEvent {
+  if (typeof e !== "object" || e === null) return false;
+  const obj = e as Record<string, unknown>;
+  return obj.type === "CUSTOM" && obj.dynaep_type === "AEP_REREGISTER_RESULT";
+}
+
 // ---------------------------------------------------------------------------
 // Factory Functions
 // ---------------------------------------------------------------------------
@@ -218,13 +299,14 @@ export interface ClockSyncParams {
   source: "ntp" | "ptp" | "system";
   offsetMs: number;
   syncedAt: number;
+  tim?: TIMMetadata;
 }
 
 /**
  * Create a ClockSyncEvent with the correct type discriminators.
  */
 export function createClockSyncEvent(params: ClockSyncParams): ClockSyncEvent {
-  return {
+  const event: ClockSyncEvent = {
     type: "CUSTOM",
     dynaep_type: "AEP_CLOCK_SYNC",
     bridgeTimeMs: params.bridgeTimeMs,
@@ -232,6 +314,10 @@ export function createClockSyncEvent(params: ClockSyncParams): ClockSyncEvent {
     offsetMs: params.offsetMs,
     syncedAt: params.syncedAt,
   };
+  if (params.tim) {
+    event.tim = params.tim;
+  }
+  return event;
 }
 
 /**
@@ -312,6 +398,67 @@ export function createTemporalResetEvent(params: TemporalResetParams): TemporalR
     oldVectorClock: params.oldVectorClock,
     newVectorClock: params.newVectorClock,
     resetAt: params.resetAt,
+  };
+}
+
+/**
+ * Parameters accepted by createTemporalRecoveryEvent.
+ */
+export interface TemporalRecoveryParams {
+  recoveredAt: number;
+  restoredAgents: string[];
+  restoredVectorClock: Record<string, number>;
+  restoredCausalPosition: number;
+  stateAge: string;
+  gapMs: number;
+  droppedEvents: number;
+  source: "file" | "sqlite" | "external";
+}
+
+/**
+ * Create a TemporalRecoveryEvent with the correct type discriminators.
+ */
+export function createTemporalRecoveryEvent(params: TemporalRecoveryParams): TemporalRecoveryEvent {
+  return {
+    type: "CUSTOM",
+    dynaep_type: "AEP_TEMPORAL_RECOVERY",
+    recoveredAt: params.recoveredAt,
+    restoredAgents: params.restoredAgents,
+    restoredVectorClock: params.restoredVectorClock,
+    restoredCausalPosition: params.restoredCausalPosition,
+    stateAge: params.stateAge,
+    gapMs: params.gapMs,
+    droppedEvents: params.droppedEvents,
+    source: params.source,
+  };
+}
+
+/**
+ * Parameters accepted by createReregisterResultEvent.
+ */
+export interface ReregisterResultParams {
+  agentId: string;
+  status: "resumed" | "reset" | "unknown";
+  restoredSequence: number;
+  gapEvents: number;
+  bridgeClockState: {
+    sync_state: string;
+    confidence_class: string;
+  };
+}
+
+/**
+ * Create a ReregisterResultEvent with the correct type discriminators.
+ */
+export function createReregisterResultEvent(params: ReregisterResultParams): ReregisterResultEvent {
+  return {
+    type: "CUSTOM",
+    dynaep_type: "AEP_REREGISTER_RESULT",
+    agentId: params.agentId,
+    status: params.status,
+    restoredSequence: params.restoredSequence,
+    gapEvents: params.gapEvents,
+    bridgeClockState: params.bridgeClockState,
   };
 }
 

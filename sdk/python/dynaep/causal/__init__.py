@@ -2,4 +2,22 @@
 from .sparse_vector_clock import SparseVectorClock
 from .partitioned_engine import PartitionedCausalEngine
 
-__all__ = ["SparseVectorClock", "PartitionedCausalEngine"]
+# TA-3.1: Durable Causal State Persistence
+from .durable_store import (
+    DurableCausalStore,
+    BufferedEvent,
+    DependencyEdge,
+    DependencyGraph,
+    AgentRegistration,
+    CausalStateSnapshot,
+    CausalPersistenceConfig,
+)
+from .file_store import FileBasedCausalStore
+
+__all__ = [
+    "SparseVectorClock", "PartitionedCausalEngine",
+    # TA-3.1: Durable Causal State Persistence
+    "DurableCausalStore", "BufferedEvent", "DependencyEdge", "DependencyGraph",
+    "AgentRegistration", "CausalStateSnapshot", "CausalPersistenceConfig",
+    "FileBasedCausalStore",
+]

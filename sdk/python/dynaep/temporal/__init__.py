@@ -26,6 +26,17 @@ from dynaep.temporal.perception_engine import (
     GovernedEnvelope,
 )
 
+# TA-3.2: Clock Quality Tracking (TIM-Compatible)
+from dynaep.temporal.clock_quality import (
+    ClockQualityTracker,
+    TIMConfig,
+    TIMMetadata,
+    WelfordVariance,
+    SyncState,
+    ConfidenceClass,
+    AnomalyFlag,
+)
+
 __all__ = [
     # TA-1: Temporal Authority
     "BridgeClock", "ClockConfig", "BridgeTimestamp", "ClockHealth",
@@ -38,4 +49,7 @@ __all__ = [
     "AdaptiveProfileManager", "AdaptiveProfileConfig", "AdaptivePerceptionProfile",
     "UserTemporalInteraction", "ModalityPreference", "ParameterAdjustment",
     "PerceptionEngine", "PerceptionEngineConfig", "GovernedEnvelope",
+    # TA-3.2: Clock Quality Tracking (TIM-Compatible)
+    "ClockQualityTracker", "TIMConfig", "TIMMetadata", "WelfordVariance",
+    "SyncState", "ConfidenceClass", "AnomalyFlag",
 ]

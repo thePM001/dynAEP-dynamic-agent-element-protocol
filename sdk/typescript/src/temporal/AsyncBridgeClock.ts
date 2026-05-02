@@ -13,6 +13,7 @@ import * as fs from "fs";
 import type { ClockConfig, BridgeTimestamp, ClockHealth, SyncResult } from "./clock";
 import type { ClockSyncEvent } from "./events";
 import { createClockSyncEvent } from "./events";
+import { ClockQualityTracker, type TIMConfig, type TIMMetadata } from "./ClockQualityTracker";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -62,7 +63,10 @@ export class AsyncBridgeClock {
   // Event listeners
   private readonly eventListeners: ((event: ClockSyncEvent) => void)[];
 
-  constructor(config: ClockConfig) {
+  // TA-3.2: TIM-compatible clock quality tracking
+  private readonly clockQualityTracker: ClockQualityTracker | null;
+
+  constructor(config: ClockConfig, timConfig?: TIMConfig) {
     this.config = Object.freeze({ ...config });
     this.activeProtocol = config.protocol;
     this.syncIntervalHandle = null;
@@ -85,6 +89,9 @@ export class AsyncBridgeClock {
 
     this.lastReturnedMs = 0;
     this.eventListeners = [];
+
+    // TA-3.2: Initialize clock quality tracker if TIM config provided
+    this.clockQualityTracker = timConfig ? new ClockQualityTracker(timConfig) : null;
   }
 
   // -------------------------------------------------------------------------
@@ -228,6 +235,24 @@ export class AsyncBridgeClock {
   }
 
   /**
+   * TA-3.2: Return the current TIM metadata block from the clock quality
+   * tracker. Returns null if TIM is not configured.
+   */
+  getClockQuality(): TIMMetadata | null {
+    if (!this.clockQualityTracker) return null;
+    return this.clockQualityTracker.getTIMBlock();
+  }
+
+  /**
+   * TA-3.2: Return the underlying ClockQualityTracker instance for
+   * direct access to sync state, confidence class, and diagnostics.
+   * Returns null if TIM is not configured.
+   */
+  getClockQualityTracker(): ClockQualityTracker | null {
+    return this.clockQualityTracker;
+  }
+
+  /**
    * Register a listener for AEP_CLOCK_SYNC events.
    */
   onSync(listener: (event: ClockSyncEvent) => void): void {
@@ -277,13 +302,25 @@ export class AsyncBridgeClock {
         this.lastSyncSuccess = true;
         this.syncCount++;
 
-        // Emit AEP_CLOCK_SYNC event
-        const event = createClockSyncEvent({
+        // TA-3.2: Record successful sync in quality tracker
+        if (this.clockQualityTracker) {
+          this.clockQualityTracker.recordSyncSuccess(result.offsetMs, this.activeProtocol);
+        }
+
+        // Emit AEP_CLOCK_SYNC event with optional TIM block
+        const syncParams: Parameters<typeof createClockSyncEvent>[0] = {
           bridgeTimeMs: this.now(),
           source: this.activeProtocol,
           offsetMs: result.offsetMs,
           syncedAt: this.lastSyncAt,
-        });
+        };
+
+        if (this.clockQualityTracker) {
+          syncParams.tim = this.clockQualityTracker.getTIMBlock();
+          this.clockQualityTracker.clearTransientAnomalyFlags();
+        }
+
+        const event = createClockSyncEvent(syncParams);
 
         for (const listener of this.eventListeners) {
           try {
@@ -294,6 +331,11 @@ export class AsyncBridgeClock {
         }
       } else {
         this.lastSyncSuccess = false;
+
+        // TA-3.2: Record failed sync in quality tracker
+        if (this.clockQualityTracker) {
+          this.clockQualityTracker.recordSyncFailure();
+        }
         if (typeof console !== "undefined") {
           console.warn(
             "[AsyncBridgeClock] NTP sync failed, retrying on next interval. " +

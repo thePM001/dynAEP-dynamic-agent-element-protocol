@@ -2,7 +2,7 @@
 
 ## Open-Source Reference + Implementation
 
-**Version 0.3** - 30 April 2026
+**Version 0.4** - 2 May 2026
 **Author:** thePM_001
 **License:** Apache-2.0
 
@@ -19,7 +19,9 @@ dynAEP is the fusion of AEP (Agent Element Protocol) and AG-UI (Agent-User Inter
 
 **dynAEP** fuses both into a single architecture where every live runtime event is constrained by AEP's deterministic graph. The agent cannot hallucinate a UI element at build time (AEP prevents it) and cannot hallucinate a state mutation at runtime (dynAEP validates every AG-UI delta against the AEP registry before applying it).
 
-**dynAEP-TA** (v0.3) adds temporal authority. AI agents have no reliable internal clock. When an agent emits a timestamp, that value is either parroted from its system prompt or fabricated. dynAEP-TA makes the bridge the sole authoritative time source for the entire protocol stack. Agents never own the clock, the same way agents never mint IDs. The bridge stamps every event, orders every sequence causally and governs how time-dependent outputs align with human temporal perception.
+**dynAEP-TA** (v0.3+) adds temporal authority. AI agents have no reliable internal clock. When an agent emits a timestamp, that value is either parroted from its system prompt or fabricated. dynAEP-TA makes the bridge the sole authoritative time source for the entire protocol stack. Agents never own the clock, the same way agents never mint IDs. The bridge stamps every event, orders every sequence causally and governs how time-dependent outputs align with human temporal perception.
+
+**dynAEP-TA v0.4** adds durable temporal state. All causal ordering state (vector clocks, reorder buffers, dependency graphs, agent registries) persists across bridge restarts via configurable storage backends (file, SQLite, external KV). TIM-compatible clock quality tracking classifies sync confidence. Four workflow temporal primitives (deadlines, schedules, sleep/resume, timeouts) use bridge-authoritative time. A three-phase recovery protocol enables graceful bridge restarts without full agent resets.
 
 ### The Protocol Stack
 
@@ -27,11 +29,11 @@ dynAEP is the fusion of AEP (Agent Element Protocol) and AG-UI (Agent-User Inter
 LAYER           PROTOCOL        FUNCTION
 -----------     -----------     ----------------------------------------
 Agent-Tools     MCP             Agent connects to external data and tools
-Agent-Agent     any             Agents coordinate across distributed systems
+Agent-Agent     (various)       Agents coordinate across distributed systems
 Agent-User      AG-UI           Real-time event streaming between agent and frontend
 Agent-UI-Gov    AEP             Deterministic UI structure, behaviour and skin
 Agent-UI-Live   dynAEP          AEP governance applied to live AG-UI event streams
-Agent-UI-Time   dynAEP-TA       Temporal authority, causal ordering, predictive forecasting
+Agent-UI-Time   dynAEP-TA       Temporal authority, causal ordering, predictive forecasting, durable state
 Agent-Percept   dynAEP-TA-P     Perceptual temporal governance for human-facing outputs
 ```
 
@@ -40,6 +42,7 @@ Agent-Percept   dynAEP-TA-P     Perceptual temporal governance for human-facing 
 AEP proves you can build UIs deterministically.
 dynAEP proves you can stream live AI interactions deterministically.
 dynAEP-TA proves you can govern time deterministically.
+dynAEP-TA v0.4 proves you can persist and recover temporal state deterministically.
 dynAEP-TA-P proves you can govern human temporal perception deterministically.
 
 The existence of this protocol stack proves that AI hallucination is an engineering problem in any domain where ground truth can be precompiled into a deterministic registry. Structure, behaviour, skin, time and perception are all governable by architecture.
@@ -271,7 +274,7 @@ The frontend emits actual rendered coordinates back to the agent via ResizeObser
 
 ### 4.5 Temporal Authority Events (v0.3)
 
-Clock synchronization broadcast:
+Clock synchronization broadcast (v0.4: includes TIM clock quality metadata):
 
 ```json
 {
@@ -280,7 +283,15 @@ Clock synchronization broadcast:
   "bridgeTimeMs": 1714300800000,
   "source": "ntp",
   "offsetMs": 3,
-  "syncedAt": 1714300799500
+  "syncedAt": 1714300799500,
+  "tim": {
+    "sync_state": "LOCKED",
+    "confidence_class": "A",
+    "uncertainty_ms": 2.1,
+    "anomaly_flags": [],
+    "holdover_since": null,
+    "last_sync_at": 1714300799500
+  }
 }
 ```
 
@@ -386,6 +397,51 @@ Temporal reset:
   "resetAt": 1714300800000
 }
 ```
+
+Temporal recovery (v0.4, emitted when bridge restarts and successfully recovers persisted state):
+
+```json
+{
+  "type": "CUSTOM",
+  "dynaep_type": "AEP_TEMPORAL_RECOVERY",
+  "recoveredAt": 1714300800000,
+  "restoredAgents": ["agent-alpha", "agent-beta"],
+  "restoredVectorClock": { "agent-alpha": 15, "agent-beta": 9 },
+  "restoredCausalPosition": 42,
+  "stateAge": "12s",
+  "gapMs": 12000,
+  "droppedEvents": 0,
+  "source": "file"
+}
+```
+
+Agent re-registration request (v0.4, sent by agents during bridge recovery Phase 2):
+
+```json
+{
+  "type": "CUSTOM",
+  "dynaep_type": "AEP_AGENT_REREGISTER",
+  "agentId": "agent-alpha",
+  "lastSequence": 15,
+  "capabilities": ["read", "write", "execute"]
+}
+```
+
+Re-registration result (v0.4, bridge response to agent re-registration):
+
+```json
+{
+  "type": "CUSTOM",
+  "dynaep_type": "AEP_REREGISTER_RESULT",
+  "agentId": "agent-alpha",
+  "status": "resumed",
+  "restoredSequence": 15,
+  "gapEvents": 0,
+  "bridgeClockState": { "sync_state": "LOCKED", "confidence_class": "A" }
+}
+```
+
+Possible `status` values: `resumed` (sequences match, agent continues), `reset` (sequences diverged, agent must reset), `unknown` (agent not in persisted registry).
 
 ### 4.6 Perception Governance Events (v0.3)
 
@@ -560,7 +616,8 @@ The authoritative temporal query interface. Every stack component MUST use this 
           "duration_between",
           "audit_trail",
           "perception_profile",
-          "perception_bounds"
+          "perception_bounds",
+          "clock_quality"
         ]
       },
       "target_id": { "type": "string", "description": "AEP element ID or event ID" },
@@ -588,6 +645,22 @@ Result examples:
 ```json
 {
   "success": true,
+  "query_type": "clock_quality",
+  "result": {
+    "sync_state": "LOCKED",
+    "confidence_class": "A",
+    "uncertainty_ms": 2.1,
+    "anomaly_flags": [],
+    "holdover_since": null,
+    "last_sync_at": 1714300799500
+  },
+  "authoritative_time_ms": 1714300800000
+}
+```
+
+```json
+{
+  "success": true,
   "query_type": "perception_bounds",
   "result": {
     "modality": "speech",
@@ -602,7 +675,7 @@ Result examples:
 }
 ```
 
-## 6. Temporal Authority (v0.3)
+## 6. Temporal Authority (v0.3, v0.4)
 
 ### 6.1 Bridge Clock
 
@@ -659,6 +732,60 @@ The sidecar feeds `AEP_RUNTIME_COORDINATES` event streams into TimesFM and produ
 TimesFM integration modes:
 - **Local**: Python subprocess with JSON-lines protocol over stdin/stdout.
 - **Remote**: HTTP POST to a TimesFM inference endpoint.
+
+### 6.5 Durable Causal State (v0.4)
+
+All causal ordering state persists across bridge restarts. The `DurableCausalStore` interface defines 13 async methods for saving and loading vector clocks, reorder buffers, dependency graphs, agent registries and the global causal position.
+
+Three storage backends are provided:
+
+1. **FileBasedCausalStore** (default): JSONL append log with periodic compaction. Writes are batched (same pattern as BufferedLedger from OPT-006). On load: reads snapshot, then replays append log entries written after the snapshot. Storage layout: `{path}/causal-snapshot.json` (full state, written on compact) and `{path}/causal-append.jsonl` (append-only log).
+
+2. **SqliteCausalStore**: SQLite backend using better-sqlite3 (optional dependency). Six tables with WAL mode and transactions. Suitable for single-process deployments needing ACID guarantees.
+
+3. **ExternalCausalStore**: Adapter for external key-value stores (Redis, DynamoDB, Cloudflare KV). Implements the `ExternalKeyValueBackend` interface (`get`, `set`, `delete` methods). Handles serialization with configurable key prefixes.
+
+The `PartitionedCausalEngine` (OPT-005) integrates with any `DurableCausalStore`. On every successful ordering, the engine queues a persistence microtask. State is restored via `restoreFromStore()` on bridge restart.
+
+### 6.6 TIM Clock Quality Tracking (v0.4)
+
+The `ClockQualityTracker` provides IETF TIM-compatible clock quality metadata. It tracks:
+
+- **Sync state machine**: `LOCKED` → `HOLDOVER` → `FREEWHEEL`. Transitions based on sync success/failure with configurable thresholds (default: 3 consecutive failures to enter HOLDOVER, holdover timeout to enter FREEWHEEL).
+- **Confidence classes** (A through F): derived from sync state, offset variance, anomaly count and time since last sync. Class A requires LOCKED state, variance < 1ms, zero anomalies and sync within 60 seconds.
+- **Uncertainty estimation**: Welford's online algorithm for streaming variance (no history storage), converted to standard deviation as the uncertainty metric.
+- **Anomaly detection**: flags for offset spike (> 5× running average), variance spike (> 10× baseline), backward jump (negative offset delta) and sync gap (> 2× expected interval).
+
+The `AsyncBridgeClock` automatically attaches TIM metadata to every `AEP_CLOCK_SYNC` event when a `ClockQualityTracker` is configured. The `dynaep_temporal_query` tool supports a `clock_quality` query type that returns the current TIM state.
+
+### 6.7 Workflow Temporal Primitives (v0.4)
+
+Four workflow primitives that use bridge-authoritative time instead of system clocks:
+
+1. **TemporalDeadline**: register a callback that fires when bridge time exceeds a deadline. Returns a `DeadlineHandle` with `cancel()`, `remaining()` and `isExpired()`. Serializable for persistence across restarts.
+
+2. **TemporalSchedule**: register a recurring callback at a fixed interval (measured in bridge time). Returns a `ScheduleHandle` with `cancel()`, `pause()`, `resume()` and tick tracking. Configurable `maxTicks` limit.
+
+3. **TemporalSleepResume**: suspend a task until a bridge-time condition is met. Creates a `SuspendedTask` with a `promise` that resolves when bridge time reaches the wake time. Serializable with `serialize()` / `restore()`.
+
+4. **TemporalTimeout**: wrap an async operation with a bridge-time timeout. Throws `TemporalTimeoutError` (extends `Error` with `elapsedMs` field) if the operation does not complete within the deadline. Does NOT use `setTimeout`; polls bridge time.
+
+The `TemporalPrimitives` facade provides a unified interface with `start()` / `stop()` lifecycle. All primitives accept a `getNow` function (dependency injection) for testability and bridge-time integration.
+
+### 6.8 Bridge Recovery Protocol (v0.4)
+
+Three-phase recovery protocol for graceful bridge restarts:
+
+**Phase 1: Announce Recovery** — On restart, the bridge checks the durable store for persisted state. If state exists and its age is within `maxRecoveryGapMs` (configurable), the state is loaded and an `AEP_TEMPORAL_RECOVERY` event is broadcast. If the state is missing or too old, a full reset occurs via `AEP_TEMPORAL_RESET`.
+
+**Phase 2: Agent Re-registration** — Agents respond to the recovery event by sending `AEP_AGENT_REREGISTER` with their `lastSequence`. The bridge compares against the persisted agent registry and replies with `AEP_REREGISTER_RESULT`:
+- `resumed`: sequences match, agent continues from where it left off.
+- `reset`: sequences diverged, agent must reset its state.
+- `unknown`: agent was not in the persisted registry.
+
+**Phase 3: Buffer Replay** — The bridge loads the persisted reorder buffer and replays buffered events through the causal engine in timestamp order. Events that fail replay are counted as `droppedEvents` in the recovery result.
+
+The protocol detects the storage backend (file, sqlite, external) automatically via constructor name inspection. Recovery is configurable: set `enabled: false` to always fall back to full reset.
 
 ## 7. Perceptual Temporal Governance (v0.3)
 
@@ -817,8 +944,8 @@ rego:
 
 ```yaml
 aep_version: "1.1"
-dynaep_version: "0.3"
-schema_revision: 1
+dynaep_version: "0.4"
+schema_revision: 2
 
 transport:
   protocol: "sse"                   # sse | websocket
@@ -888,6 +1015,14 @@ timekeeping:
   bridge_is_authority: true
   log_drift_warnings: true
 
+  # ---- TIM Clock Quality (v0.4) ----
+  tim:
+    enabled: true
+    holdover_failures: 3
+    holdover_timeout_ms: 60000
+    freewheel_timeout_ms: 300000
+    variance_window: 20
+
 causal_ordering:
   enabled: true
   max_reorder_buffer_size: 64
@@ -895,6 +1030,20 @@ causal_ordering:
   enable_vector_clocks: true
   enable_element_history: true
   history_depth: 100
+
+  # ---- Durable Causal State (v0.4) ----
+  persistence:
+    enabled: true
+    backend: "file"                 # file | sqlite | external
+    path: "./data/causal-state"
+    flush_interval_ms: 100
+    flush_batch_size: 100
+    compact_interval_ms: 3600000    # 1 hour
+
+  # ---- Bridge Recovery (v0.4) ----
+  recovery:
+    enabled: true
+    max_recovery_gap_ms: 300000     # 5 minutes
 
 forecast:
   enabled: false                    # disabled by default (requires TimesFM)
@@ -1004,7 +1153,7 @@ When schema_revision is bumped while the application is running, dynAEP handles 
 - TemporalValidator with drift/future/staleness checks, 3 enforcement modes
 - CausalOrderingEngine with vector clocks, reorder buffer, dependency tracking, conflict detection
 - ForecastSidecar with TimesFM (local + remote), linear extrapolation fallback, z-score anomaly detection, adaptive debounce
-- 7 temporal event types
+- 10 temporal event types (7 from v0.3 + 3 from v0.4)
 - Rego temporal policies (8 rules)
 - Bridge integration: temporal pipeline inserted before structural validation
 - Python bridge: full temporal pipeline mirror
@@ -1024,7 +1173,29 @@ When schema_revision is bumped while the application is running, dynAEP handles 
 - dynaep-config.yaml: perception, temporal_authority sections
 - 120 tests across 12 test files, zero failures
 
-### Phase 10: Documentation and Examples -- IN PROGRESS
+### Phase 10a: Durable Temporal Authority (v0.4) -- COMPLETE
+- DurableCausalStore interface with 13 async methods for state persistence
+- FileBasedCausalStore: JSONL append log with batched writes and periodic compaction
+- SqliteCausalStore: SQLite backend with 6 tables, WAL mode, transactions
+- ExternalCausalStore: adapter for Redis, DynamoDB, Cloudflare KV via ExternalKeyValueBackend
+- PartitionedCausalEngine persistence integration: queuePersistence(), restoreFromStore(), shutdown()
+- ClockQualityTracker: TIM-compatible sync state machine (LOCKED/HOLDOVER/FREEWHEEL), confidence classes A-F, Welford's variance, anomaly flags
+- AsyncBridgeClock integration: TIM metadata on AEP_CLOCK_SYNC events, clock_quality query type
+- TemporalDeadline: bridge-time deadlines with serialization
+- TemporalSchedule: bridge-time recurring callbacks with pause/resume
+- TemporalSleepResume: bridge-time task suspension with serialization
+- TemporalTimeout: bridge-time timeouts with TemporalTimeoutError
+- TemporalPrimitives facade: unified lifecycle (start/stop)
+- BridgeRecoveryProtocol: three-phase recovery (announce, re-register, buffer replay)
+- 3 new temporal event types (AEP_TEMPORAL_RECOVERY, AEP_AGENT_REREGISTER, AEP_REREGISTER_RESULT)
+- AEP_CLOCK_SYNC extended with TIM metadata block
+- dynaep_temporal_query extended with clock_quality operation
+- Python bridge: full TA-3 mirror (durable_store, file_store, clock_quality, temporal_primitives, bridge_recovery)
+- dynaep-config.yaml: persistence, recovery, tim sections
+- Performance test suite (bench-013) for durable store throughput
+- 160+ tests across 4 new test files, zero failures
+
+### Phase 10b: Documentation and Examples -- IN PROGRESS
 - Full API reference for dynAEP bridge
 - Tutorial: "Build a live agentic dashboard with dynAEP"
 - Tutorial: "Connect LangGraph to dynAEP"
@@ -1057,6 +1228,16 @@ Exports:
 - PerceptionEngine -- temporal annotation governance (v0.3)
 - AdaptiveProfileManager -- per-user preference learning (v0.3)
 - DynAEPTemporalAuthority -- stack-wide time authority (v0.3)
+- FileBasedCausalStore -- JSONL append log durable store (v0.4)
+- SqliteCausalStore -- SQLite durable store (v0.4)
+- ExternalCausalStore -- external KV durable store (v0.4)
+- ClockQualityTracker -- TIM clock quality tracking (v0.4)
+- TemporalPrimitives -- workflow temporal facade (v0.4)
+- TemporalDeadline -- bridge-time deadlines (v0.4)
+- TemporalSchedule -- bridge-time recurring callbacks (v0.4)
+- TemporalSleepResume -- bridge-time task suspension (v0.4)
+- TemporalTimeout -- bridge-time timeout wrapper (v0.4)
+- BridgeRecoveryProtocol -- three-phase bridge recovery (v0.4)
 
 ### 15.2 @dynaep/react (React)
 
@@ -1118,6 +1299,10 @@ Exports:
 - PerceptionRegistry -- human perception bounds (v0.3)
 - PerceptionEngine -- temporal annotation governance (v0.3)
 - AdaptiveProfileManager -- per-user preference learning (v0.3)
+- FileBasedCausalStore -- JSONL append log durable store (v0.4)
+- ClockQualityTracker -- TIM clock quality tracking (v0.4)
+- TemporalPrimitives -- workflow temporal facade (v0.4)
+- BridgeRecoveryProtocol -- three-phase bridge recovery (v0.4)
 
 ### 15.5 dynaep-cli
 
@@ -1196,6 +1381,10 @@ dynAEP works with every AG-UI-compatible agent backend. The bridge sits on the f
 | Agent polls sensors for human-facing data | dynAEP-TA-P |
 | Agent composes audio for human listeners | dynAEP-TA-P |
 | Content staleness check needs authoritative time | dynAEP-TA |
+| Bridge restarts should not lose causal ordering state | dynAEP-TA (v0.4) |
+| Workflow deadlines or timeouts need bridge time | dynAEP-TA (v0.4) |
+| Clock quality and sync confidence must be tracked | dynAEP-TA (v0.4) |
+| Agents need to re-register after bridge restart | dynAEP-TA (v0.4) |
 
 AEP is always the foundation. dynAEP is the live runtime layer on top. dynAEP-TA is the temporal authority underneath everything. dynAEP-TA-P governs the perceptual boundary where machine output meets human perception.
 
@@ -1219,6 +1408,11 @@ AEP is always the foundation. dynAEP is the live runtime layer on top. dynAEP-TA
 | Ignoring schema_revision bumps at runtime | Stale configs cause validation errors | Bridge emits DYNAEP_SCHEMA_RELOAD + AEP_TEMPORAL_RESET, agents re-query |
 | Driving 4+ output modalities simultaneously | Sensory overload, reduced comprehension | Cross-modality Rego rule limits active modalities to configurable ceiling |
 | Hardcoding perception thresholds in renderers | Ungovernable, inconsistent across modalities | All bounds live in PerceptionRegistry, validated by PerceptionEngine |
+| Storing causal state only in memory | Bridge restart loses all ordering state, forces full agent reset | Use DurableCausalStore with file, SQLite or external backend |
+| Using setTimeout for workflow deadlines | System clock drift, not bridge-authoritative, breaks on sleep/wake | Use TemporalDeadline / TemporalTimeout with bridge-time getNow |
+| Full agent reset on every bridge restart | Wasteful, loses context, causes UX disruption | BridgeRecoveryProtocol recovers state within maxRecoveryGapMs |
+| Trusting clock sync without quality tracking | Silent drift degradation, undetected holdover, false confidence | ClockQualityTracker provides TIM confidence classes and anomaly flags |
+| Agents storing their own sequence counters without persistence | Sequence mismatch on restart, causal ordering failures | Bridge persists agent registry with lastSequence, agents re-register via AEP_AGENT_REREGISTER |
 
 ## 19. Summary
 
@@ -1236,8 +1430,12 @@ dynAEP fuses AEP's deterministic topological matrix with AG-UI's real-time event
 - **Conflict resolution**: last-write-wins with causal vector clocks or optimistic locking for mission-critical multi-agent scenarios
 - **Predictive intelligence**: TimesFM forecasts UI state changes and detects anomalous mutation patterns
 - **Perception governance**: speech pacing, haptic timing, notification cadence, sensor polling and audio composition all governed against researched human perception thresholds
+- **Durable temporal state**: all causal ordering state persists across bridge restarts via configurable storage backends
+- **TIM clock quality**: IETF TIM-compatible sync state machine with confidence classification and anomaly detection
+- **Workflow temporal primitives**: deadlines, schedules, sleep/resume and timeouts using bridge-authoritative time
+- **Graceful recovery**: three-phase bridge recovery protocol eliminates full agent resets after restarts
 
-The agent provides the semantic intelligence. The AEP graph provides the structural laws. The bridge clock provides the temporal laws. The perception registry provides the perceptual laws. dynAEP is the enforcement layer that connects them all.
+The agent provides the semantic intelligence. The AEP graph provides the structural laws. The bridge clock provides the temporal laws. The perception registry provides the perceptual laws. The durable store provides the persistence laws. dynAEP is the enforcement layer that connects them all.
 
 ## Related
 
