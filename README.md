@@ -2,7 +2,7 @@
 
 ## Open-Source Reference + Implementation
 
-**Version 0.4** - 2 May 2026
+**Version 0.4** - 2nd May 2026
 **Author:** thePM_001
 **License:** Apache-2.0
 
